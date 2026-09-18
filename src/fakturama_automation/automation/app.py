@@ -126,10 +126,17 @@ def _visible(control: UIAWrapper) -> bool:
 class FakturamaApp:
     """One attached Fakturama process with centralized semantic selectors."""
 
-    def __init__(self, desktop: Desktop, window: UIAWrapper, timeout: float) -> None:
+    def __init__(
+        self,
+        desktop: Desktop,
+        window: UIAWrapper,
+        timeout: float,
+        settings: Settings | None = None,
+    ) -> None:
         self.desktop = desktop
         self.window = window
         self.timeout = timeout
+        self.settings = settings
         self._order_view: OrderView | None = None
 
     @classmethod
@@ -165,7 +172,7 @@ class FakturamaApp:
             lambda: window if _visible(window) else None,
             settings.uia_timeout_seconds,
         )
-        return cls(desktop, window, settings.uia_timeout_seconds)
+        return cls(desktop, window, settings.uia_timeout_seconds, settings=settings)
 
     def find_unique(
         self,
@@ -331,6 +338,13 @@ class OrderView:
             self.app.timeout,
         )
         wait_until("dirty New Order", lambda: True if self._is_dirty() else None, self.app.timeout)
+        grid = self._items_grid()
+        settings = self.app.settings
+        if settings is None:
+            raise _automation_failure("Fakturama app has no Settings for Items-grid OCR")
+        from fakturama_automation.automation.visual_items import select_item_row_visually
+
+        select_item_row_visually(grid, sku, settings)
 
     def edit_grid_values(
         self,
