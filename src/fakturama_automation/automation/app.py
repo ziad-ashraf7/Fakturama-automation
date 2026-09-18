@@ -331,11 +331,6 @@ class OrderView:
             self.app.timeout,
         )
         wait_until("dirty New Order", lambda: True if self._is_dirty() else None, self.app.timeout)
-        grid = self._items_grid()
-        grid.set_focus()
-        keyboard.send_keys("{F2}")
-        self._focused_editor()
-        keyboard.send_keys("{ESC}")
 
     def edit_grid_values(
         self,

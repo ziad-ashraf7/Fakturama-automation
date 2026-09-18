@@ -127,14 +127,47 @@ def _labelled_edits(root: Any, label_name: str) -> list[Any]:
     return controls
 
 
+def _select_combo_value(root: Any, name: str, value: str) -> None:
+    combo = _named(root, name, ('ComboBox',))
+    opens = [button for button in combo.descendants(control_type='Button') if _safe_name(button) == 'Open' and _visible(button)]
+    if len(opens) != 1:
+        raise _automation_failure(f'ComboBox {name!r} has no unique Open action')
+    opens[0].invoke()
+    item = wait_until(
+        f'combo value {value!r}',
+        lambda: next((candidate for candidate in root.parent().descendants(control_type='ListItem') if _safe_name(candidate) == value and _visible(candidate)), None),
+        5.0,
+    )
+    item.click_input()
+
+
+def _set_formatted_percent(root: Any, name: str, value: Decimal) -> None:
+    edit = _named(root, name, ('Edit',))
+    edit.click_input()
+    keyboard.send_keys('{HOME}')
+    keyboard.send_keys('+{END}')
+    rendered = format(value, 'f').rstrip('0').rstrip('.') or '0'
+    keyboard.send_keys(rendered)
+    keyboard.send_keys('{TAB}')
+    try:
+        actual = str(edit.iface_value.CurrentValue).replace(' ', '')
+    except Exception as error:
+        raise _automation_failure(f'Could not read formatted {name!r} value') from error
+    if actual not in {rendered, f'{rendered}%'}:
+        raise _automation_failure(
+            f'Formatted {name!r} value mismatch: expected {rendered!r}, got {actual!r}'
+        )
+
+
 def _editor_pane(app: FakturamaApp, tab_name: str) -> Any | None:
     tabs = [
         tab
         for tab in app.window.descendants(control_type="TabItem")
         if _safe_name(tab) == tab_name and _visible(tab)
     ]
-    if len(tabs) != 1:
+    if not tabs:
         return None
+    tabs[0].click_input()
     panes = [
         child
         for child in tabs[0].parent().children(control_type="Pane")
@@ -385,7 +418,7 @@ def _close_dialog(dialog: Any) -> None:
         keyboard.send_keys("{ESC}")
 
 
-def ensure_vat(app: FakturamaApp, order_view: OrderView, vat_percent: Decimal) -> str:
+def _legacy_ensure_vat(app: FakturamaApp, order_view: OrderView, vat_percent: Decimal) -> str:
     """Ensure the exact VAT definition is available and return its expected name."""
 
     del order_view
@@ -418,7 +451,7 @@ def ensure_vat(app: FakturamaApp, order_view: OrderView, vat_percent: Decimal) -
     return expected
 
 
-def _create_product(app: FakturamaApp, item: OrderItem, vat_name: str) -> None:
+def _legacy_create_product(app: FakturamaApp, item: OrderItem, vat_name: str) -> None:
     _open_data_item(app, "Products")
     dialog = wait_until("Product maintenance dialog", lambda: _dialog(app), app.timeout)
     new_button = _first_button(dialog, ("New", "Create"))
@@ -448,6 +481,137 @@ def _create_product(app: FakturamaApp, item: OrderItem, vat_name: str) -> None:
     _close_dialog(dialog)
 
 
+def _field_editor(app: FakturamaApp, edit_names: tuple[str, ...], combo_name: str) -> Any:
+    candidates = []
+    for pane in app.window.descendants(control_type='Pane'):
+        if not _visible(pane):
+            continue
+        edits = {_safe_name(edit) for edit in pane.descendants(control_type='Edit') if _visible(edit)}
+        combos = {_safe_name(combo) for combo in pane.descendants(control_type='ComboBox') if _visible(combo)}
+        if set(edit_names).issubset(edits) and combo_name in combos:
+            candidates.append(pane)
+    if not candidates:
+        raise _automation_failure('Could not locate the requested maintenance editor')
+    return min(candidates, key=lambda pane: pane.element_info.rectangle.width() * pane.element_info.rectangle.height())
+
+
+def _tab_button(app: FakturamaApp, tab_name: str, button_name: str) -> Any:
+    tabs = [
+        tab
+        for tab in app.window.descendants(control_type='TabItem')
+        if _visible(tab) and _safe_name(tab) == tab_name
+    ]
+    if len(tabs) != 1:
+        raise _automation_failure(f'Expected one {tab_name!r} tab')
+    tab_container = tabs[0].parent()
+    toolbars = [
+        toolbar
+        for toolbar in tab_container.descendants(control_type='ToolBar')
+        if toolbar.element_info.class_name == 'ToolbarWindow32'
+        and toolbar.parent().element_info.class_name == 'SWT_Window0'
+        and _visible(toolbar)
+    ]
+    buttons = [
+        button
+        for toolbar in toolbars
+        for button in toolbar.descendants(control_type='Button')
+        if _safe_name(button) == button_name and _visible(button)
+    ]
+    if len(buttons) != 1:
+        raise _automation_failure(f'Expected one {button_name!r} action in {tab_name!r}')
+    return buttons[0]
+
+
+def _editor_by_base_tab(app: FakturamaApp, tab_name: str) -> Any | None:
+    tabs = [
+        tab
+        for tab in app.window.descendants(control_type='TabItem')
+        if _visible(tab) and _safe_name(tab).lstrip('*') == tab_name
+    ]
+    if not tabs:
+        return None
+    panes = [
+        pane
+        for pane in tabs[0].parent().children(control_type='Pane')
+        if _safe_name(pane) == _safe_name(tabs[0]) and _visible(pane)
+    ]
+    return panes[0] if len(panes) == 1 else None
+
+
+def ensure_vat(app: FakturamaApp, order_view: OrderView, vat_percent: Decimal) -> str:
+    del order_view
+    expected = f'VAT {vat_percent.normalize()}%'
+    _open_data_item(app, 'VATs')
+    existing_tabs = [
+        tab
+        for tab in app.window.descendants(control_type='TabItem')
+        if _visible(tab) and _safe_name(tab).lstrip('*') == expected
+    ]
+    if existing_tabs:
+        return expected
+
+    new_button = _tab_button(app, 'VATs', 'Create a new tax rate')
+    if new_button is None:
+        raise _automation_failure(f'Missing VAT {expected} and no create action')
+    new_button.invoke()
+    editor = wait_until(
+        'new VAT editor',
+        lambda: _field_editor(app, ('Name', 'Value'), 'VAT code (E-Invoice)'),
+        app.timeout,
+    )
+    _write(editor, 'Name', expected)
+    _set_formatted_percent(editor, 'Value', vat_percent)
+    _select_combo_value(editor, 'VAT code (E-Invoice)', 'S (Standard rate)')
+    save = _first_button(app.window, ('Save the current contents',))
+    if save is None:
+        raise _automation_failure('VAT editor has no save action')
+    save.invoke()
+    wait_until('VAT save completion', lambda: True if not save.is_enabled() else None, app.timeout)
+    wait_until(
+        'saved VAT editor',
+        lambda: next(
+            (
+                tab
+                for tab in app.window.descendants(control_type='TabItem')
+                if _visible(tab) and _safe_name(tab).lstrip('*') == expected
+            ),
+            None,
+        ),
+        app.timeout,
+    )
+    return expected
+
+
+def _create_product(app: FakturamaApp, item: OrderItem, vat_name: str) -> None:
+    _open_data_item(app, 'Products')
+    new_button = _tab_button(app, 'Products', 'Create a new product')
+    if new_button is None:
+        raise _automation_failure('Product maintenance has no create action')
+    new_button.invoke()
+    editor = wait_until(
+        'new Product editor',
+        lambda: _field_editor(app, ('Item Number', 'Name'), 'VAT'),
+        app.timeout,
+    )
+    _write(editor, 'Item Number', item.sku)
+    _write(editor, 'Name', item.description)
+    description = _named(editor, 'Description', ('Edit',))
+    description.set_edit_text(item.description)
+    price = _labelled_edits(editor, 'Price (gross)')
+    cost = _labelled_edits(editor, 'cost price (net)')
+    if len(price) != 1 or len(cost) != 1:
+        raise _automation_failure('Product editor has no unique price fields')
+    price[0].set_edit_text(str(product_gross_price(item.unit_net, item.vat_percent)))
+    cost[0].set_edit_text('0')
+    _write(editor, 'Stock', '0')
+    _select_combo_value(editor, 'VAT', vat_name)
+    save = _first_button(app.window, ('Save the current contents',))
+    if save is None:
+        raise _automation_failure('Product editor has no save action')
+    save.invoke()
+    wait_until('Product save completion', lambda: True if not save.is_enabled() else None, app.timeout)
+
+
 def resolve_product(app: FakturamaApp, order_view: OrderView, item: OrderItem) -> None:
     """Resolve an exact SKU, creating the master record when no match exists."""
 
@@ -465,6 +629,7 @@ def resolve_product(app: FakturamaApp, order_view: OrderView, item: OrderItem) -
         try:
             vat_name = ensure_vat(app, order_view, item.vat_percent)
             _create_product(app, item, vat_name)
+            order_view.activate()
             order_view.insert_unique_product(item.sku)
         except Exception:  # noqa: BLE001
             raise error
