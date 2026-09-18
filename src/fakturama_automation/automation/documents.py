@@ -127,19 +127,45 @@ def expected_line_values(order: OrderInput) -> dict[str, Decimal]:
     }
 
 
+def _selected_control_value(control: Any) -> str:
+    try:
+        return str(control.iface_value.CurrentValue)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _select_net_price_mode(root: Any) -> None:
+    radios = [
+        control
+        for name in ("Net", "Net price")
+        for control in root.descendants(control_type="RadioButton")
+        if _safe_name(control) == name and _visible(control)
+    ]
+    if len(radios) == 1:
+        radios[0].select()
+        return
+
+    combos = [
+        combo
+        for combo in root.descendants(control_type="ComboBox")
+        if _selected_control_value(combo).strip().casefold() in {"gross", "net"}
+        and _visible(combo)
+    ]
+    if len(combos) != 1:
+        raise _automation_failure(
+            f"Expected one semantic price-mode selector, found {len(combos)}"
+        )
+    combos[0].select("Net")
+    actual = _selected_control_value(combos[0]).strip()
+    if actual.casefold() != "net":
+        raise _automation_failure(f"Price mode read-back mismatch: expected 'Net', got {actual!r}")
+
+
 def populate_order_header(order_view: OrderView, order: OrderInput) -> None:
     root = order_view.root
     _write(root, "Date", order.order_date.strftime("%d.%m.%Y"))
     _write(root, "Cust.Ref.", order.external_reference)
-    for name in ("Net", "Net price"):
-        matches = [
-            x
-            for x in root.descendants(control_type="RadioButton")
-            if _safe_name(x) == name and _visible(x)
-        ]
-        if len(matches) == 1:
-            matches[0].select()
-            break
+    _select_net_price_mode(root)
     for name in ("With VAT", "VAT included"):
         matches = [
             x
