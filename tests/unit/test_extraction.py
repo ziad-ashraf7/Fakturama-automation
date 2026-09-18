@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from mistralai.extra import response_format_from_pydantic_model
 from pydantic import SecretStr
 
 from fakturama_automation.config import Settings
@@ -89,7 +90,7 @@ def test_parse_annotation_preserves_missing_and_explicit_values() -> None:
     assert draft.items is not None
     assert draft.items[0].unit_net is None
     assert draft.totals is not None
-    assert draft.totals.discount_percent == Decimal(0)
+    assert draft.totals.discount_percent == '0'
     assert draft.totals.shipping is None
 
 
@@ -282,3 +283,14 @@ def test_extract_wraps_unusable_sdk_response_annotation(
         extractor.extract(image_path)
 
     assert raised.value.stage == "extraction"
+
+
+def test_mistral_annotation_schema_uses_decimal_strings_for_financial_values() -> None:
+    schema = response_format_from_pydantic_model(OrderExtractionDraft)["json_schema"]["schema"]
+    item_schema = schema["$defs"]["OrderItemExtractionDraft"]["properties"]
+    totals_schema = schema["$defs"]["OrderTotalsExtractionDraft"]["properties"]
+
+    item_types = {branch.get("type") for branch in item_schema["unit_net"]["anyOf"]}
+    total_types = {branch.get("type") for branch in totals_schema["gross"]["anyOf"]}
+    assert item_types == {"string", "null"}
+    assert total_types == {"string", "null"}

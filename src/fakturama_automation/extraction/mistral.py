@@ -1,17 +1,23 @@
 """Structured order extraction through Mistral Document AI OCR."""
 
 import base64
+import importlib.metadata
 import json
 import mimetypes
-from datetime import date
-from decimal import Decimal
+import os
+import platform
+import re
+import sys
+import traceback
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
 from mistralai.client import Mistral
 from mistralai.client.models import ImageURLChunk
 from mistralai.extra import response_format_from_pydantic_model
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from fakturama_automation.config import Settings
 from fakturama_automation.domain.models import OrderInput
@@ -27,6 +33,82 @@ Use null for missing values and never infer or calculate financial values. Add e
 source value is ambiguous or illegible to uncertain_fields using paths such as
 items[0].unit_net. Preserve whether order-level discount_percent and shipping were omitted.
 """
+
+
+def _sanitize_diagnostic(value: object, secret: str | None) -> str:
+    text = str(value)
+    if secret:
+        text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", text)
+    text = re.sub(
+        r"(?i)(authorization|api[-_]?key|token|secret)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    return text
+
+
+def _write_ocr_diagnostic(
+    settings: Settings,
+    image_path: Path,
+    error: BaseException,
+    *,
+    stage: str,
+) -> None:
+    if os.environ.get("FAKTURAMA_DEBUG_DIAGNOSTICS") != "1":
+        return
+    secret = (
+        settings.mistral_api_key.get_secret_value()
+        if settings.mistral_api_key is not None
+        else None
+    )
+    try:
+        image_size = image_path.stat().st_size if image_path.exists() else "missing"
+    except OSError:
+        image_size = "unavailable"
+    provider_error = error.__cause__ or error
+    cause = error.__cause__
+    context = error.__context__
+    status = getattr(provider_error, "status_code", None)
+    body = getattr(provider_error, "body", None)
+    headers = getattr(provider_error, "headers", None)
+    request_id = None
+    if headers is not None:
+        for header_name in ("x-request-id", "request-id", "x-mistral-request-id"):
+            try:
+                request_id = headers.get(header_name)
+            except Exception:  # noqa: BLE001
+                request_id = None
+            if request_id:
+                break
+    traceback_text = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
+    lines = [
+        f"timestamp_utc={datetime.now(UTC).isoformat()}",
+        f"python={sys.version}",
+        f"platform={platform.platform()}",
+        f"mistralai_version={importlib.metadata.version('mistralai')}",
+        f"mistral_model={_sanitize_diagnostic(settings.mistral_model, secret)}",
+        f"MISTRAL_API_KEY_PRESENT={bool(secret and secret.strip() and secret != 'replace-with-local-key')}",
+        f"source_image={_sanitize_diagnostic(image_path, secret)}",
+        f"source_image_exists={image_path.exists()}",
+        f"source_image_size_bytes={image_size}",
+        f"source_image_suffix={image_path.suffix}",
+        f"stage={stage}",
+        f"underlying_exception_class={type(provider_error).__module__}.{type(provider_error).__name__}",
+        f"underlying_exception_message={_sanitize_diagnostic(provider_error, secret)}",
+        f"http_status_code={status}",
+        f"mistral_request_id={_sanitize_diagnostic(request_id, secret)}",
+        f"provider_error_body={_sanitize_diagnostic(body, secret)}",
+        "cause=" + _sanitize_diagnostic(cause, secret),
+        "context=" + _sanitize_diagnostic(context, secret),
+        "traceback=",
+        _sanitize_diagnostic(traceback_text, secret),
+    ]
+    output = Path("artifacts/debug/mistral-ocr-failure.log")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class DraftModel(BaseModel):
@@ -62,22 +144,48 @@ class PaymentExtractionDraft(DraftModel):
     payment_date: date | None = None
 
 
+def _validate_decimal_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        Decimal(value)
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError("financial extraction value must be a decimal string") from error
+    return value
+
+
 class OrderItemExtractionDraft(DraftModel):
     sku: str | None = None
     description: str | None = None
-    quantity: Decimal | None = None
-    unit_net: Decimal | None = None
-    vat_percent: Decimal | None = None
-    discount_percent: Decimal | None = None
-    source_total: Decimal | None = None
+    quantity: str | None = None
+    unit_net: str | None = None
+    vat_percent: str | None = None
+    discount_percent: str | None = None
+    source_total: str | None = None
+
+    _validate_financial_strings = field_validator(
+        "quantity",
+        "unit_net",
+        "vat_percent",
+        "discount_percent",
+        "source_total",
+    )(_validate_decimal_string)
 
 
 class OrderTotalsExtractionDraft(DraftModel):
-    net: Decimal | None = None
-    vat: Decimal | None = None
-    gross: Decimal | None = None
-    discount_percent: Decimal | None = None
-    shipping: Decimal | None = None
+    net: str | None = None
+    vat: str | None = None
+    gross: str | None = None
+    discount_percent: str | None = None
+    shipping: str | None = None
+
+    _validate_financial_strings = field_validator(
+        "net",
+        "vat",
+        "gross",
+        "discount_percent",
+        "shipping",
+    )(_validate_decimal_string)
 
 
 class OrderExtractionDraft(DraftModel):
@@ -273,6 +381,12 @@ class MistralOrderExtractor:
                 document_annotation_prompt=ANNOTATION_PROMPT,
             )
         except Exception as error:
+            _write_ocr_diagnostic(
+                self._settings,
+                image_path,
+                error,
+                stage="ocr.process",
+            )
             raise ExtractionFailure(
                 "Mistral OCR request failed",
                 stage="extraction",
