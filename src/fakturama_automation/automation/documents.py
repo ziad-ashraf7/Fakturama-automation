@@ -90,6 +90,20 @@ def _write(root: Any, name: str, value: str) -> None:
     keyboard.send_keys(escape_keyboard_text(value), with_spaces=True)
 
 
+def _set_order_date(root: Any, order_date: date) -> None:
+    control = _control(root, "Date")
+    target = order_date.strftime("%b %d, %Y")
+    try:
+        control.iface_value.SetValue(target)
+    except Exception as exc:
+        raise _automation_failure("Failed to set Order Date via UIA ValuePattern") from exc
+    actual = _read(root, "Date").strip()
+    if actual != target:
+        raise _automation_failure(
+            f"Order Date read-back mismatch: expected {target!r}, got {actual!r}"
+        )
+
+
 def _read(root: Any, name: str, control_types: tuple[str, ...] = ("Edit",)) -> str:
     control = _control(root, name, control_types)
     for getter in (
@@ -163,7 +177,7 @@ def _select_net_price_mode(root: Any) -> None:
 
 def populate_order_header(order_view: OrderView, order: OrderInput) -> None:
     root = order_view.root
-    _write(root, "Date", order.order_date.strftime("%d.%m.%Y"))
+    _set_order_date(root, order.order_date)
     _write(root, "Cust.Ref.", order.external_reference)
     _select_net_price_mode(root)
     for name in ("With VAT", "VAT included"):
