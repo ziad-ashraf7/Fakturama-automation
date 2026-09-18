@@ -308,11 +308,22 @@ class OrderView:
             raise ValueError("SKU must not be empty")
         self.find_section_image("Items").click_input()
         picker = wait_until("Select a product dialog", self.app._picker, self.app.timeout)
-        self.app.find_unique("Search:", "Text", parent=picker)
-        search = self.app.find_unique("", "Edit", parent=picker)
-        search.set_focus()
-        keyboard.send_keys("^a")
-        keyboard.send_keys(escape_keyboard_text(sku), with_spaces=True)
+        label = self.app.find_unique("Search:", "Text", parent=picker)
+        search_panes = [
+            pane
+            for pane in label.parent().children(control_type="Pane")
+            if _safe_name(pane) == "" and _visible(pane)
+        ]
+        if len(search_panes) != 1:
+            raise _automation_failure("Product search field container is not unique")
+        search_edits = [
+            edit
+            for edit in search_panes[0].children(control_type="Edit")
+            if _visible(edit)
+        ]
+        if len(search_edits) != 1:
+            raise _automation_failure("Product search field is not unique")
+        search_edits[0].set_edit_text(sku)
 
         wait_until(
             f"automatic exact selection of product {sku!r}",
