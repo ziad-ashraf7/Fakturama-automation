@@ -189,6 +189,7 @@ def populate_order_items(app: FakturamaApp, order_view: OrderView, order: OrderI
         resolve_product(app, order_view, item)
         evidence = probe_items_grid(
             order_view,
+            sku=item.sku,
             quantity=item.quantity,
             unit_price=item.unit_net,
             vat=f"VAT {item.vat_percent.normalize()}%",

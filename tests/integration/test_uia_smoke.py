@@ -40,6 +40,7 @@ def test_unsaved_order_sections_and_items_grid_probe(uia_enabled: None) -> None:
         order_view.insert_unique_product("UIA-PROBE-001")
         evidence = probe_items_grid(
             order_view,
+            sku="UIA-PROBE-001",
             quantity=Decimal(7),
             unit_price=Decimal("123.45"),
             vat="Tax-free (0.0%)",

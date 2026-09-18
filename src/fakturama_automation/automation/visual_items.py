@@ -141,6 +141,53 @@ def _item_column(headers: list[str]) -> int:
     raise _automation_failure("Items OCR markdown has no Item No. column")
 
 
+def _column_index(headers: list[str], column: str) -> int:
+    expected = _normalize(column).rstrip(".")
+    aliases = {
+        "item no": {"item no", "sku", "item number"},
+        "qty": {"qty", "quantity"},
+        "u.price": {"u.price", "unit price"},
+        "vat": {"vat"},
+        "discount": {"discount"},
+        "price": {"price"},
+    }
+    accepted = aliases.get(expected, {expected})
+    for index, header in enumerate(headers):
+        if _normalize(header).rstrip(".") in accepted:
+            return index
+    raise _automation_failure(f"Items OCR markdown has no {column!r} column")
+
+
+def cell_for_sku(
+    image: Any, markdown: str, sku: str, column: str
+) -> tuple[int, int, int, int]:
+    """Map one exact markdown SKU row to a dynamically detected cell."""
+
+    headers, rows = _markdown_table(markdown)
+    item_column = _item_column(headers)
+    column_index = _column_index(headers, column)
+    matches = [
+        index
+        for index, row in enumerate(rows)
+        if item_column < len(row) and _normalize(row[item_column]) == _normalize(sku)
+    ]
+    if len(matches) > 1:
+        raise MasterDataConflict("Multiple exact product rows", stage="product")
+    if not matches:
+        raise _automation_failure(f"Visible product row {sku!r} was not verified")
+    _row_left, row_top, _row_right, row_bottom = detect_row_bands(image, len(rows))[matches[0]]
+    separators = _vertical_separators(image)
+    boundaries = [0, *separators, image.width]
+    if column_index + 1 >= len(boundaries):
+        raise _automation_failure(f"Could not detect {column!r} column in current grid image")
+    return (
+        boundaries[column_index],
+        row_top,
+        boundaries[column_index + 1],
+        row_bottom,
+    )
+
+
 def row_band_for_sku(
     image: Any, markdown: str, sku: str
 ) -> tuple[int, int, int, int]:
@@ -164,32 +211,10 @@ def row_band_for_sku(
 def item_cell_for_sku(
     image: Any, markdown: str, sku: str
 ) -> tuple[int, int, int, int]:
-    """Map one exact markdown SKU row to its locally detected Item No. cell."""
+    """Map one exact markdown SKU row to its dynamically detected Item No. cell."""
 
-    headers, rows = _markdown_table(markdown)
-    item_column = _item_column(headers)
-    matches = [
-        index
-        for index, row in enumerate(rows)
-        if item_column < len(row) and _normalize(row[item_column]) == _normalize(sku)
-    ]
-    if len(matches) > 1:
-        raise MasterDataConflict("Multiple exact product rows", stage="product")
-    if not matches:
-        raise _automation_failure(f"Visible product row {sku!r} was not verified")
-    _row_left, row_top, _row_right, row_bottom = detect_row_bands(image, len(rows))[matches[0]]
-    separators = _vertical_separators(image)
-    if len(separators) <= item_column:
-        raise _automation_failure(
-            f"Could not detect Item No. column {item_column} in current grid image"
-        )
-    boundaries = [0, *separators]
-    return (
-        boundaries[item_column],
-        row_top,
-        boundaries[item_column + 1],
-        row_bottom,
-    )
+    return cell_for_sku(image, markdown, sku, "Item No.")
+
 
 
 def _ocr_markdown(image: Any, settings: Settings) -> str:
@@ -222,6 +247,19 @@ def select_item_row_visually(grid: Any, sku: str, settings: Settings) -> bool:
 
     image = grid.capture_as_image()
     markdown = _ocr_markdown(image, settings)
-    left, top, right, bottom = item_cell_for_sku(image, markdown, sku)
+    left, top, right, bottom = cell_for_sku(image, markdown, sku, "Item No.")
     grid.click_input(coords=((left + right) // 2, (top + bottom) // 2))
     return True
+
+
+def activate_item_cell_visually(
+    grid: Any, sku: str, column: str, settings: Settings
+) -> tuple[int, int, int, int]:
+    """Click one exact SKU row's current cell using local OCR geometry."""
+
+    image = grid.capture_as_image()
+    markdown = _ocr_markdown(image, settings)
+    cell = cell_for_sku(image, markdown, sku, column)
+    left, top, right, bottom = cell
+    grid.click_input(coords=((left + right) // 2, (top + bottom) // 2))
+    return cell

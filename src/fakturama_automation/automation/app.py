@@ -91,7 +91,10 @@ def normalize_grid_readback(column: str, displayed: str) -> Decimal | str:
     """Normalize a visible/editor value without losing financial precision."""
 
     if column == "VAT":
-        return " ".join(displayed.split())
+        normalized = " ".join(displayed.split())
+        if normalized.startswith("VAT ") and " (" in normalized:
+            return normalized.split(" (", 1)[0]
+        return normalized
     numeric = re.sub(r"[^0-9.\-]", "", displayed)
     try:
         value = Decimal(numeric)
@@ -346,26 +349,63 @@ class OrderView:
 
         select_item_row_visually(grid, sku, settings)
 
+    def _activate_grid_cell(self, sku: str, column: str) -> tuple[UIAWrapper, tuple[int, int, int, int]]:
+        settings = self.app.settings
+        if settings is None:
+            raise _automation_failure("Fakturama app has no Settings for Items-grid OCR")
+        from fakturama_automation.automation.visual_items import activate_item_cell_visually
+
+        grid = self._items_grid()
+        cell = activate_item_cell_visually(grid, sku, column, settings)
+        return grid, cell
+
+    def _focused_editor_in_cell(
+        self, grid: UIAWrapper, cell: tuple[int, int, int, int], column: str
+    ) -> UIAWrapper:
+        editor = self._focused_editor()
+        grid_rect = grid.element_info.rectangle
+        editor_rect = editor.element_info.rectangle
+        left, top, right, bottom = cell
+        expected = (
+            grid_rect.left + left,
+            grid_rect.top + top,
+            grid_rect.left + right,
+            grid_rect.top + bottom,
+        )
+        if not (
+            editor_rect.left >= expected[0]
+            and editor_rect.right <= expected[2]
+            and editor_rect.top >= expected[1]
+            and editor_rect.bottom <= expected[3]
+        ):
+            raise _automation_failure(
+                f"{column} editor is outside its dynamically detected cell: "
+                f"editor={editor_rect}, cell={expected}"
+            )
+        return editor
+
     def edit_grid_values(
         self,
         *,
+        sku: str,
         quantity: Decimal,
         unit_price: Decimal,
         vat: str,
         discount_percent: Decimal,
     ) -> dict[str, str]:
-        grid = self._items_grid()
-        grid.set_focus()
-        keyboard.send_keys("{HOME}")
         read_back: dict[str, str] = {}
 
-        read_back["Qty"] = self._edit_numeric("Qty", quantity)
-        self._move("Qty", "U.Price")
-        read_back["U.Price"] = self._edit_numeric("U.Price", unit_price)
-        self._move("U.Price", "VAT")
-        read_back["VAT"] = self._edit_vat(vat)
-        self._move("VAT", "Discount")
-        read_back["Discount"] = self._edit_numeric("Discount", discount_percent)
+        read_back["Qty"] = self._edit_direct_numeric(sku, "Qty", quantity)
+        read_back["U.Price"] = self._edit_direct_numeric(
+            sku, "U.Price", unit_price
+        )
+
+        self._activate_grid_cell(sku, "VAT")
+        read_back["VAT"] = self._edit_vat(vat, editor_open=True)
+
+        read_back["Discount"] = self._edit_direct_numeric(
+            sku, "Discount", discount_percent
+        )
         return read_back
 
     def _is_dirty(self) -> bool:
@@ -441,14 +481,32 @@ class OrderView:
         for key in grid_key_path(start, target):
             keyboard.send_keys(f"{{{key}}}")
 
-    def _edit_numeric(self, column: str, value: Decimal) -> str:
-        keyboard.send_keys("{F2}")
+    def _edit_numeric(
+        self, column: str, value: Decimal, *, editor_active: bool = False
+    ) -> str:
+        if not editor_active:
+            keyboard.send_keys("{F2}")
         editor = self._focused_editor()
         editor.set_focus()
         keyboard.send_keys("^a")
         keyboard.send_keys(value_for_grid_entry(column, value))
+        typed_value = self._control_value(editor)
         keyboard.send_keys("{ENTER}")
-        return self._read_numeric_editor()
+        try:
+            return self._control_value(editor)
+        except AutomationFailure:
+            return typed_value
+
+    def _edit_direct_numeric(self, sku: str, column: str, value: Decimal) -> str:
+        grid, cell = self._activate_grid_cell(sku, column)
+        self._focused_editor_in_cell(grid, cell, column)
+        self._edit_numeric(column, value, editor_active=True)
+
+        grid, cell = self._activate_grid_cell(sku, column)
+        editor = self._focused_editor_in_cell(grid, cell, column)
+        read_back = self._control_value(editor)
+        keyboard.send_keys("{ENTER}")
+        return read_back
 
     def _read_numeric_editor(self) -> str:
         keyboard.send_keys("{F2}")
@@ -457,8 +515,9 @@ class OrderView:
         keyboard.send_keys("{ENTER}")
         return value
 
-    def _edit_vat(self, vat: str) -> str:
-        keyboard.send_keys("{F2}")
+    def _edit_vat(self, vat: str, *, editor_open: bool = False) -> str:
+        if not editor_open:
+            keyboard.send_keys("{F2}")
         item = wait_until(
             f"VAT list item {vat!r}",
             lambda: self._unique_visible_list_item(vat),
@@ -470,32 +529,24 @@ class OrderView:
             selected = False
         if not selected:
             item.select()
-        keyboard.send_keys("{ENTER}")
-
-        keyboard.send_keys("{F2}")
-        read_back = wait_until(
-            f"VAT read-back {vat!r}",
-            lambda: self._unique_visible_list_item(vat),
-            self.app.timeout,
-        )
-        try:
-            selected = read_back.is_selected()
-        except (AttributeError, RuntimeError) as exc:
-            raise _automation_failure(
-                f"VAT read-back {vat!r} does not expose selection state"
-            ) from exc
-        if not selected:
-            raise _automation_failure(f"VAT read-back {vat!r} is not selected")
-        value = _safe_name(read_back)
+        value = _safe_name(item)
         keyboard.send_keys("{ENTER}")
         return value
+
 
     def _unique_visible_list_item(self, name: str) -> UIAWrapper | None:
         expected = " ".join(name.split())
         matches = [
             item
-            for item in self.root.descendants(control_type="ListItem")
-            if " ".join(_safe_name(item).split()) == expected and _visible(item)
+            for item in self.app.window.descendants(control_type="ListItem")
+            if (
+                " ".join(_safe_name(item).split()) == expected
+                or (
+                    expected.startswith("VAT ")
+                    and " ".join(_safe_name(item).split()).startswith(expected + " (")
+                )
+            )
+            and _visible(item)
         ]
         if len(matches) > 1:
             raise _automation_failure(f"VAT list item {name!r} is ambiguous")
@@ -522,6 +573,7 @@ class OrderView:
 def probe_items_grid(
     order_view: OrderView,
     *,
+    sku: str,
     quantity: Decimal,
     unit_price: Decimal,
     vat: str,
@@ -530,6 +582,7 @@ def probe_items_grid(
     """Edit and read back the four verified Items-grid fields without saving."""
 
     read_back = order_view.edit_grid_values(
+        sku=sku,
         quantity=quantity,
         unit_price=unit_price,
         vat=vat,
