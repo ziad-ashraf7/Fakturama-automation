@@ -186,6 +186,8 @@ def validate_extraction(draft: OrderExtractionDraft) -> OrderInput:
         "totals.net",
         "totals.vat",
         "totals.gross",
+        "totals.discount_percent",
+        "totals.shipping",
     }
     if draft.items:
         for index in range(len(draft.items)):
@@ -272,7 +274,13 @@ class MistralOrderExtractor:
                 stage="extraction",
             ) from error
 
-        annotation = response.document_annotation
+        try:
+            annotation = response.document_annotation
+        except Exception as error:
+            raise ExtractionFailure(
+                "Malformed Mistral annotation",
+                stage="extraction",
+            ) from error
         if not isinstance(annotation, str):
             raise ExtractionFailure(
                 "Malformed Mistral annotation",

@@ -137,6 +137,22 @@ def test_validate_extraction_requires_review_for_uncertain_required_data() -> No
         validate_extraction(parse_annotation(payload))
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["totals.discount_percent", "totals.shipping"],
+)
+def test_validate_extraction_requires_review_for_uncertain_optional_financial_data(
+    path: str,
+) -> None:
+    payload = complete_annotation()
+    payload["uncertain_fields"] = [path]
+
+    with pytest.raises(ManualReviewRequired, match=re.escape(path)) as raised:
+        validate_extraction(parse_annotation(payload))
+
+    assert raised.value.stage == "extraction_validation"
+
+
 def test_validate_extraction_requires_payment_date_for_paid_source() -> None:
     payload = complete_annotation()
     payload["payment"].update(status="PAID", payment_date=None)  # type: ignore[union-attr]
@@ -235,3 +251,34 @@ def test_extract_rejects_non_json_annotation(
 
     with pytest.raises(ExtractionFailure, match="Malformed Mistral annotation"):
         extractor.extract(image_path)
+
+
+class InaccessibleAnnotation:
+    @property
+    def document_annotation(self) -> str:
+        raise RuntimeError("annotation unavailable")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [SimpleNamespace(), InaccessibleAnnotation(), SimpleNamespace(document_annotation=None)],
+)
+def test_extract_wraps_unusable_sdk_response_annotation(
+    response: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "order.png"
+    image_path.write_bytes(b"fake-png")
+    client = SimpleNamespace(ocr=SimpleNamespace(process=Mock(return_value=response)))
+    monkeypatch.setattr(
+        "fakturama_automation.extraction.mistral.Mistral", Mock(return_value=client)
+    )
+    extractor = MistralOrderExtractor(
+        Settings(mistral_api_key=SecretStr("test-key"), _env_file=None)
+    )
+
+    with pytest.raises(ExtractionFailure, match="Malformed Mistral annotation") as raised:
+        extractor.extract(image_path)
+
+    assert raised.value.stage == "extraction"
