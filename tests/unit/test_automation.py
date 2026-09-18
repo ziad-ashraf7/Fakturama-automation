@@ -61,3 +61,45 @@ def test_normalize_grid_readback_handles_fakturama_presentation(
 
 def test_escape_keyboard_text_preserves_literal_sku_characters() -> None:
     assert escape_keyboard_text("SKU+{A}%") == "SKU{+}{{}A{}}{%}"
+
+class _FakeInfo:
+    def __init__(self, name: str, process_id: int) -> None:
+        self.name = name
+        self.process_id = process_id
+
+
+class _FakeControl:
+    def __init__(self, name: str, process_id: int, visible: bool = True) -> None:
+        self.element_info = _FakeInfo(name, process_id)
+        self._visible = visible
+
+    def is_visible(self) -> bool:
+        return self._visible
+
+    def is_enabled(self) -> bool:
+        return self._visible
+
+
+class _FakeWindow(_FakeControl):
+    def __init__(self, process_id: int, descendants: list[_FakeControl]) -> None:
+        super().__init__("Fakturama", process_id)
+        self._descendants = descendants
+
+    def descendants(self, **_: object) -> list[_FakeControl]:
+        return self._descendants
+
+
+class _FakeDesktop:
+    def windows(self) -> list[_FakeControl]:
+        return []
+
+
+def test_product_picker_can_be_found_as_fakturama_child_window() -> None:
+    from fakturama_automation.automation.app import FakturamaApp
+
+    picker = _FakeControl("Select a product", 7)
+    app = object.__new__(FakturamaApp)
+    app.window = _FakeWindow(7, [picker])
+    app.desktop = _FakeDesktop()
+
+    assert app._picker() is picker

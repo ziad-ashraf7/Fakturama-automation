@@ -243,9 +243,11 @@ class FakturamaApp:
 
     def _picker(self) -> UIAWrapper | None:
         process_id = self.window.element_info.process_id
+        candidates = [window for window in self.desktop.windows() if window is not self.window]
+        candidates.extend(self.window.descendants(control_type="Window"))
         matches = [
             window
-            for window in self.desktop.windows()
+            for window in candidates
             if _safe_name(window) == _PRODUCT_PICKER
             and window.element_info.process_id == process_id
             and _visible(window)
