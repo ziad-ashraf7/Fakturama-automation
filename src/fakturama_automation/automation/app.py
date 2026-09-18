@@ -71,6 +71,22 @@ def value_for_grid_entry(column: str, value: Decimal) -> str:
     return _plain_decimal(value)
 
 
+def escape_keyboard_text(value: str) -> str:
+    """Escape pywinauto key-sequence syntax while preserving literal text."""
+
+    escaped = {
+        "{": "{{}",
+        "}": "{}}",
+        "+": "{+}",
+        "^": "{^}",
+        "%": "{%}",
+        "~": "{~}",
+        "(": "{(}",
+        ")": "{)}",
+    }
+    return "".join(escaped.get(character, character) for character in value)
+
+
 def normalize_grid_readback(column: str, displayed: str) -> Decimal | str:
     """Normalize a visible/editor value without losing financial precision."""
 
@@ -242,10 +258,21 @@ class OrderView:
     def __init__(self, app: FakturamaApp, tab: UIAWrapper) -> None:
         self.app = app
         self.tab = tab
+        parent = tab.parent()
+        panes = [
+            child
+            for child in parent.children(control_type="Pane")
+            if _safe_name(child) == _NEW_ORDER and _visible(child)
+        ]
+        if len(panes) != 1:
+            raise _automation_failure(
+                f"Expected one New Order editor Pane, found {len(panes)}"
+            )
+        self.editor = panes[0]
 
     @property
     def root(self) -> UIAWrapper:
-        return self.app.window
+        return self.editor
 
     def activate(self) -> None:
         try:
@@ -279,7 +306,7 @@ class OrderView:
         self.app.find_unique("Search:", "Text", parent=picker)
         search = self.app.find_unique("", "Edit", parent=picker)
         search.set_focus()
-        keyboard.send_keys(sku, with_spaces=True)
+        keyboard.send_keys(escape_keyboard_text(sku), with_spaces=True)
 
         wait_until(
             f"automatic exact selection of product {sku!r}",
@@ -396,6 +423,14 @@ class OrderView:
             lambda: self._unique_visible_list_item(vat),
             self.app.timeout,
         )
+        try:
+            selected = read_back.is_selected()
+        except (AttributeError, RuntimeError) as exc:
+            raise _automation_failure(
+                f"VAT read-back {vat!r} does not expose selection state"
+            ) from exc
+        if not selected:
+            raise _automation_failure(f"VAT read-back {vat!r} is not selected")
         value = _safe_name(read_back)
         keyboard.send_keys("{ENTER}")
         return value
@@ -451,10 +486,14 @@ def probe_items_grid(
         "VAT": " ".join(vat.split()),
         "Discount": discount_percent,
     }
+    discount_sign_verified = (
+        discount_percent == 0
+        or read_back["Discount"].lstrip().startswith("-")
+    )
     verified = all(
         normalize_grid_readback(column, read_back[column]) == expected[column]
         for column in ("Qty", "U.Price", "VAT", "Discount")
-    )
+    ) and discount_sign_verified
     return GridProbeEvidence(
         column_order=("Qty", "U.Price", "VAT", "Discount"),
         read_back_values=read_back,

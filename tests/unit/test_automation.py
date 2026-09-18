@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 
 from fakturama_automation.automation.app import (
+    escape_keyboard_text,
     grid_key_path,
     normalize_grid_readback,
     value_for_grid_entry,
@@ -56,3 +57,7 @@ def test_normalize_grid_readback_handles_fakturama_presentation(
     column: str, displayed: str, expected: Decimal | str
 ) -> None:
     assert normalize_grid_readback(column, displayed) == expected
+
+
+def test_escape_keyboard_text_preserves_literal_sku_characters() -> None:
+    assert escape_keyboard_text("SKU+{A}%") == "SKU{+}{{}A{}}{%}"
