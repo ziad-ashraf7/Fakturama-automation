@@ -206,10 +206,7 @@ def select_debtor_row_visually(dialog: Any, debtor: Debtor, settings: Settings) 
     pane = _result_pane(dialog, searches[0])
     image = pane.capture_as_image()
     rows = _ocr_rows(image, settings)
-    if rows and any(
-        row.left == row.top == row.right == row.bottom == 0
-        for row in rows
-    ):
+    if rows:
         bounds = row_bounds_from_separators(image.size, _horizontal_separators(image), len(rows))
         rows = [
             row.model_copy(

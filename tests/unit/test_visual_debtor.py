@@ -76,3 +76,61 @@ def test_relative_click_point_requires_bounds_inside_capture() -> None:
 
     with pytest.raises(AutomationFailure, match="outside result-pane capture"):
         relative_click_point(_row(left=-1), (200, 100))
+
+from PIL import Image, ImageDraw
+
+from fakturama_automation.automation import visual_debtor
+
+
+class _Edit:
+    def is_visible(self) -> bool:
+        return True
+
+    def is_enabled(self) -> bool:
+        return True
+
+
+class _Pane:
+    def __init__(self, image: Image.Image) -> None:
+        self.image = image
+        self.clicked: tuple[int, int] | None = None
+
+    def capture_as_image(self) -> Image.Image:
+        return self.image
+
+    def click_input(self, *, coords: tuple[int, int]) -> None:
+        self.clicked = coords
+
+
+class _Dialog:
+    def __init__(self, edit: _Edit) -> None:
+        self.edit = edit
+
+    def descendants(self, *, control_type: str):
+        return [self.edit] if control_type == "Edit" else []
+
+
+def test_debtor_row_with_out_of_range_llm_bounds_uses_local_row_band(monkeypatch, debtor: Debtor) -> None:
+    image = Image.new("RGB", (100, 30), "white")
+    draw = ImageDraw.Draw(image)
+    draw.line((0, 5, 99, 5), fill="black")
+    draw.line((0, 25, 99, 25), fill="black")
+    pane = _Pane(image)
+    rows = [
+        visual_debtor.VisualDebtorRow(
+            company="Northstar Office ...",
+            first_name="Marta",
+            last_name="Klein",
+            zip_code="10117",
+            city="Berlin",
+            left=0,
+            top=0,
+            right=800,
+            bottom=40,
+        )
+    ]
+    monkeypatch.setattr(visual_debtor, "_result_pane", lambda dialog, search: pane)
+    monkeypatch.setattr(visual_debtor, "_ocr_rows", lambda image, settings: rows)
+
+    assert visual_debtor.select_debtor_row_visually(_Dialog(_Edit()), debtor, object()) is True
+    assert pane.clicked == (50, 15)
