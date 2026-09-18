@@ -92,15 +92,19 @@ def _write(root: Any, name: str, value: str) -> None:
 
 def _set_order_date(root: Any, order_date: date) -> None:
     control = _control(root, "Date")
-    target = order_date.strftime("%b %d, %Y")
-    try:
-        control.iface_value.SetValue(target)
-    except Exception as exc:
-        raise _automation_failure("Failed to set Order Date via UIA ValuePattern") from exc
+    control.set_focus()
+    keyboard.send_keys("{HOME}")
+    keyboard.send_keys(str(order_date.month))
+    keyboard.send_keys("{ENTER}")
+    keyboard.send_keys(str(order_date.day))
+    keyboard.send_keys("{ENTER}")
+    keyboard.send_keys(str(order_date.year))
+    keyboard.send_keys("{ENTER}")
     actual = _read(root, "Date").strip()
-    if actual != target:
+    expected = f"{order_date.strftime('%b')} {order_date.day}, {order_date.year}"
+    if actual != expected:
         raise _automation_failure(
-            f"Order Date read-back mismatch: expected {target!r}, got {actual!r}"
+            f"Order Date read-back mismatch: expected {expected!r}, got {actual!r}"
         )
 
 
