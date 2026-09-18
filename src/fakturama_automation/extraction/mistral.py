@@ -233,7 +233,11 @@ class MistralOrderExtractor:
 
     def __init__(self, settings: Settings) -> None:
         api_key = settings.mistral_api_key
-        if api_key is None or not api_key.get_secret_value().strip():
+        if (
+            api_key is None
+            or not api_key.get_secret_value().strip()
+            or api_key.get_secret_value().strip() == "replace-with-local-key"
+        ):
             raise ConfigurationFailure(
                 "MISTRAL_API_KEY is required for Mistral extraction",
                 stage="configuration",
