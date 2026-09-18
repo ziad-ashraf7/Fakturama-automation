@@ -1,0 +1,44 @@
+[build-system]
+requires = ['setuptools>=68']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'fakturama-automation'
+version = '0.1.0'
+description = 'Image-to-cash automation for Fakturama'
+requires-python = '>=3.12'
+dependencies = [
+    'mistralai',
+    'pydantic',
+    'pydantic-settings',
+    'pywinauto',
+]
+
+[project.optional-dependencies]
+dev = [
+    'pytest',
+    'ruff',
+]
+
+[project.scripts]
+fakturama-automation = 'fakturama_automation.cli:main'
+
+[tool.setuptools.packages.find]
+where = ['src']
+
+[tool.pytest.ini_options]
+markers = [
+    'uia: tests that require a Windows Fakturama UI Automation session',
+]
+testpaths = ['tests']
+
+[tool.ruff]
+line-length = 100
+target-version = 'py312'
+extend-exclude = [
+    'inspect_order.py',
+    'inspect_order_details.py',
+    'open_order_test.py',
+    'probe_selectors.py',
+    'test.py',
+]
