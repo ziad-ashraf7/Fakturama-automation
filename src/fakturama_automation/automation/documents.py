@@ -179,20 +179,30 @@ def _select_net_price_mode(root: Any) -> None:
         raise _automation_failure(f"Price mode read-back mismatch: expected 'Net', got {actual!r}")
 
 
+def _select_vat_mode(root: Any) -> None:
+    combos = [
+        combo
+        for combo in root.descendants(control_type="ComboBox")
+        if _safe_name(combo) == "VAT" and _visible(combo)
+    ]
+    if len(combos) != 1:
+        raise _automation_failure(
+            f"Expected one semantic VAT-mode selector, found {len(combos)}"
+        )
+    combos[0].select("With VAT")
+    actual = " ".join(_selected_control_value(combos[0]).split())
+    if actual.casefold() != "with vat":
+        raise _automation_failure(
+            f"VAT mode read-back mismatch: expected 'With VAT', got {actual!r}"
+        )
+
+
 def populate_order_header(order_view: OrderView, order: OrderInput) -> None:
     root = order_view.root
     _set_order_date(root, order.order_date)
     _write(root, "Cust.Ref.", order.external_reference)
     _select_net_price_mode(root)
-    for name in ("With VAT", "VAT included"):
-        matches = [
-            x
-            for x in root.descendants(control_type="CheckBox")
-            if _safe_name(x) == name and _visible(x)
-        ]
-        if len(matches) == 1 and not matches[0].is_checked():
-            matches[0].check()
-            break
+    _select_vat_mode(root)
     discount, shipping = order_level_values(order)
     if discount != 0:
         _write(root, "Discount", str(discount))
