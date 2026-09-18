@@ -361,24 +361,53 @@ class OrderView:
         return self.app.find_unique("Items", "Text", parent=self.root).parent()
 
     def _items_grid(self) -> UIAWrapper:
-        panes = [
+        section = self._items_section()
+        direct_panes = [
             pane
-            for pane in self._items_section().children(control_type="Pane")
+            for pane in section.children(control_type="Pane")
             if _safe_name(pane) == ""
             and pane.element_info.class_name == _WINDOW_CLASS
             and _visible(pane)
         ]
-        if len(panes) != 1:
+        if len(direct_panes) == 1:
+            return direct_panes[0]
+        if len(direct_panes) > 1:
             raise _automation_failure(
-                f"Expected one local opaque Items grid Pane, found {len(panes)}"
+                f"Expected one local opaque Items grid Pane, found {len(direct_panes)}"
             )
-        return panes[0]
+
+        section_rect = section.element_info.rectangle
+        sibling_content = [
+            pane
+            for pane in section.parent().children(control_type="Pane")
+            if _safe_name(pane) == ""
+            and pane.element_info.class_name == _WINDOW_CLASS
+            and _visible(pane)
+            and pane.element_info.rectangle.top == section_rect.top
+            and pane.element_info.rectangle.left > section_rect.right
+        ]
+        if len(sibling_content) != 1:
+            raise _automation_failure(
+                "Expected one semantic Items content Pane beside the section controls"
+            )
+        nested_panes = [
+            pane
+            for pane in sibling_content[0].children(control_type="Pane")
+            if _safe_name(pane) == ""
+            and pane.element_info.class_name == _WINDOW_CLASS
+            and _visible(pane)
+        ]
+        if len(nested_panes) != 1:
+            raise _automation_failure(
+                f"Expected one opaque Items grid inside content Pane, found {len(nested_panes)}"
+            )
+        return nested_panes[0]
 
     def _focused_editor(self) -> UIAWrapper:
         def locate() -> UIAWrapper | None:
             editors = [
                 control
-                for control in self._items_section().descendants(control_type="Edit")
+                for control in self._items_grid().descendants(control_type="Edit")
                 if _visible(control) and control.has_keyboard_focus()
             ]
             if len(editors) > 1:
