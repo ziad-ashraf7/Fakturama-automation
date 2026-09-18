@@ -52,6 +52,22 @@ def test_multiple_exact_visual_matches_raise_manual_review(debtor: Debtor) -> No
         exact_visual_matches([_row(), _row(left=400, right=690)], debtor)
 
 
+
+
+def test_company_ellipsis_is_presentation_truncation_not_fuzzy_match(debtor: Debtor) -> None:
+    rows = [_row(company="Northstar Office ...")]
+
+    assert exact_visual_matches(rows, debtor) == rows
+
+
+def test_row_bounds_are_derived_from_detected_separators() -> None:
+    from fakturama_automation.automation.visual_debtor import row_bounds_from_separators
+
+    assert row_bounds_from_separators((778, 424), (19, 39, 59), 2) == [
+        (0, 19, 778, 39),
+        (0, 39, 778, 59),
+    ]
+
 def test_relative_click_point_requires_bounds_inside_capture() -> None:
     assert relative_click_point(_row(left=10, top=20, right=110, bottom=60), (200, 100)) == (
         60,

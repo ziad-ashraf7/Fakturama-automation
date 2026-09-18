@@ -49,6 +49,15 @@ def _normalize(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _presentation_exact(actual: str, expected: str, *, allow_company_ellipsis: bool = False) -> bool:
+    normalized_actual = _normalize(actual)
+    normalized_expected = _normalize(expected)
+    if allow_company_ellipsis and normalized_actual.endswith("..."):
+        prefix = normalized_actual[:-3].rstrip()
+        return bool(prefix) and normalized_expected.startswith(prefix)
+    return normalized_actual == normalized_expected
+
+
 def exact_visual_matches(rows: list[VisualDebtorRow], debtor: Debtor) -> list[VisualDebtorRow]:
     """Return rows matching every non-empty identity field visible in the source."""
 
@@ -63,7 +72,12 @@ def exact_visual_matches(rows: list[VisualDebtorRow], debtor: Debtor) -> list[Vi
         row
         for row in rows
         if all(
-            not expected[field] or _normalize(getattr(row, field)) == _normalize(expected[field])
+            not expected[field]
+            or _presentation_exact(
+                getattr(row, field),
+                expected[field],
+                allow_company_ellipsis=field == "company",
+            )
             for field in expected
         )
     ]
@@ -71,6 +85,42 @@ def exact_visual_matches(rows: list[VisualDebtorRow], debtor: Debtor) -> list[Vi
         raise MasterDataConflict("Multiple exact debtor rows", stage="debtor")
     return matches
 
+
+def row_bounds_from_separators(
+    image_size: tuple[int, int], separators: tuple[int, ...], row_count: int
+) -> list[tuple[int, int, int, int]]:
+    """Build row boxes from detected horizontal table separators."""
+
+    width, height = image_size
+    if row_count <= 0 or len(separators) < row_count + 1:
+        raise _automation_failure("Could not derive enough debtor row separators")
+    if any(not 0 <= y <= height for y in separators):
+        raise _automation_failure("Detected debtor row separator is outside capture")
+    bounds = [
+        (0, separators[index], width, separators[index + 1])
+        for index in range(row_count)
+    ]
+    if any(top >= bottom for _, top, _, bottom in bounds):
+        raise _automation_failure("Detected debtor row separators are invalid")
+    return bounds
+
+
+def _horizontal_separators(image: Any) -> tuple[int, ...]:
+    gray = image.convert("L")
+    width, _ = gray.size
+    threshold = max(1, int(width * 0.8))
+    candidates: list[int] = []
+    for y in range(gray.height):
+        dark_pixels = sum(1 for x in range(width) if gray.getpixel((x, y)) < 220)
+        if dark_pixels >= threshold:
+            candidates.append(y)
+    groups: list[list[int]] = []
+    for y in candidates:
+        if not groups or y > groups[-1][-1] + 1:
+            groups.append([y])
+        else:
+            groups[-1].append(y)
+    return tuple((group[0] + group[-1]) // 2 for group in groups)
 
 def relative_click_point(row: VisualDebtorRow, image_size: tuple[int, int]) -> tuple[int, int]:
     """Validate an OCR box and return its center in the captured Pane coordinates."""
@@ -156,8 +206,39 @@ def select_debtor_row_visually(dialog: Any, debtor: Debtor, settings: Settings) 
     pane = _result_pane(dialog, searches[0])
     image = pane.capture_as_image()
     rows = _ocr_rows(image, settings)
+    if rows and any(
+        row.left == row.top == row.right == row.bottom == 0
+        for row in rows
+    ):
+        bounds = row_bounds_from_separators(image.size, _horizontal_separators(image), len(rows))
+        rows = [
+            row.model_copy(
+                update={
+                    "left": left,
+                    "top": top,
+                    "right": right,
+                    "bottom": bottom,
+                }
+            )
+            for row, (left, top, right, bottom) in zip(rows, bounds, strict=True)
+        ]
     matches = exact_visual_matches(rows, debtor)
     if not matches:
+        expected_fields = (
+            ("company", debtor.company),
+            ("first_name", debtor.first_name or ""),
+            ("last_name", debtor.last_name or ""),
+            ("zip_code", debtor.billing_address.zip_code),
+            ("city", debtor.billing_address.city),
+        )
+        if any(
+            rows
+            and expected
+            and not getattr(row, field)
+            for row in rows
+            for field, expected in expected_fields
+        ):
+            raise MasterDataConflict("Debtor row identity could not be verified", stage="debtor")
         return False
     point = relative_click_point(matches[0], image.size)
     pane.click_input(coords=point)
