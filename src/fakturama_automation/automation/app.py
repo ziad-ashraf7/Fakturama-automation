@@ -311,6 +311,7 @@ class OrderView:
         self.app.find_unique("Search:", "Text", parent=picker)
         search = self.app.find_unique("", "Edit", parent=picker)
         search.set_focus()
+        keyboard.send_keys("^a")
         keyboard.send_keys(escape_keyboard_text(sku), with_spaces=True)
 
         wait_until(
