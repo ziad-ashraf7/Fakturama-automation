@@ -18,6 +18,8 @@ from fakturama_automation.automation.app import (
     escape_keyboard_text,
     wait_until,
 )
+from fakturama_automation.automation.visual_debtor import select_debtor_row_visually
+from fakturama_automation.config import Settings
 from fakturama_automation.domain.models import Debtor, OrderItem, Payment
 from fakturama_automation.domain.outcomes import MasterDataConflict
 from fakturama_automation.domain.rules import (
@@ -153,26 +155,81 @@ def _first_button(root: Any, names: Iterable[str]):
     return None
 
 
-def _select_single_row(dialog: Any, expected_parts: tuple[str, ...], stage: str) -> bool:
+def _order_visible_text(root: Any) -> str:
+    values: list[str] = []
+    for control in [root, *root.descendants()]:
+        for getter in (
+            lambda control=control: _safe_name(control),
+            lambda control=control: control.window_text(),
+            lambda control=control: control.iface_value.CurrentValue,
+        ):
+            try:
+                value = str(getter())
+            except Exception:  # noqa: BLE001
+                value = ""
+            if value:
+                values.append(value)
+    return normalize_display(" ".join(values))
+
+
+def _debtor_address_populated(order_view: OrderView, debtor: Debtor) -> bool:
+    visible = _order_visible_text(order_view.root)
+    expected = (
+        debtor.company,
+        debtor.billing_address.street,
+        debtor.billing_address.zip_code,
+        debtor.billing_address.city,
+    )
+    return all(normalize_display(value) in visible for value in expected if value)
+
+
+def _select_debtor_row(
+    dialog: Any,
+    debtor: Debtor,
+    settings: Settings,
+    order_view: OrderView,
+) -> bool:
     rows = [item for item in dialog.descendants(control_type="ListItem") if _visible(item)]
+    expected_parts = tuple(
+        part
+        for part in (
+            debtor.company,
+            debtor.first_name,
+            debtor.last_name,
+            debtor.billing_address.zip_code,
+            debtor.billing_address.city,
+        )
+        if part
+    )
     matches = [
         row
         for row in rows
         if all(normalize_display(part) in normalize_display(_safe_name(row)) for part in expected_parts)
     ]
     if len(matches) > 1:
-        raise MasterDataConflict(f"Multiple exact {stage} matches", stage=stage)
+        raise MasterDataConflict("Multiple exact debtor rows", stage="debtor")
     if not matches:
+        selected = select_debtor_row_visually(dialog, debtor, settings)
+    else:
+        row = matches[0]
+        try:
+            row.select()
+        except (AttributeError, RuntimeError):
+            row.click_input()
+        selected = True
+    if not selected:
         return False
-    row = matches[0]
-    try:
-        row.select()
-    except (AttributeError, RuntimeError):
-        row.click_input()
     ok = _first_button(dialog, ("OK", "Select", "Use"))
     if ok is None:
-        raise _automation_failure(f"{stage} dialog has no confirmation button")
+        raise _automation_failure("Debtor selector has no confirmation button")
     ok.invoke()
+    wait_until(
+        "selected debtor address",
+        lambda: True
+        if not _visible(dialog) and _debtor_address_populated(order_view, debtor)
+        else None,
+        settings.uia_timeout_seconds,
+    )
     return True
 
 
@@ -181,6 +238,7 @@ def _create_debtor(
     order_view: OrderView,
     debtor: Debtor,
     payment: Payment,
+    settings: Settings,
 ) -> None:
     _open_data_item(app, "Debtors")
     new_button = wait_until(
@@ -256,21 +314,17 @@ def _create_debtor(
         raise _automation_failure("Debtor selector did not return after creation")
     search[0].set_focus()
     keyboard.send_keys(escape_keyboard_text(debtor.company), with_spaces=True)
-    expected_parts = tuple(
-        part
-        for part in (
-            debtor.company,
-            debtor.alias,
-            debtor.billing_address.zip_code,
-            debtor.billing_address.city,
-        )
-        if part
-    )
-    if not _select_single_row(dialog, expected_parts, "debtor"):
+    if not _select_debtor_row(dialog, debtor, settings, order_view):
         raise _automation_failure("Created debtor was not selectable from the same Order")
 
 
-def resolve_debtor(app: FakturamaApp, order_view: OrderView, debtor: Debtor, payment: Payment) -> None:
+def resolve_debtor(
+    app: FakturamaApp,
+    order_view: OrderView,
+    debtor: Debtor,
+    payment: Payment,
+    settings: Settings,
+) -> None:
     """Select one exact debtor, or create it while retaining the open Order."""
 
     order_view.find_section_image("Addresses").click_input()
@@ -280,21 +334,11 @@ def resolve_debtor(app: FakturamaApp, order_view: OrderView, debtor: Debtor, pay
         raise _automation_failure(f"Expected one debtor search field, found {len(search)}")
     search[0].set_focus()
     keyboard.send_keys(escape_keyboard_text(debtor.company), with_spaces=True)
-    expected_parts = tuple(
-        part
-        for part in (
-            debtor.company,
-            debtor.alias,
-            debtor.billing_address.zip_code,
-            debtor.billing_address.city,
-        )
-        if part
-    )
-    if _select_single_row(dialog, expected_parts, "debtor"):
+    if _select_debtor_row(dialog, debtor, settings, order_view):
         return
 
     _close_dialog(dialog)
-    _create_debtor(app, order_view, debtor, payment)
+    _create_debtor(app, order_view, debtor, payment, settings)
 
 
 def ensure_payment_method(app: FakturamaApp | None, payment_method: str) -> str:

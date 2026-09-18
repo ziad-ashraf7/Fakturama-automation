@@ -59,7 +59,7 @@ def run_order_to_cash(image_path: Path, settings: Settings) -> RunOutcome:
         populate_order_header(order_view, order)
         stage = "master_data"
         ensure_payment_method(app, order.payment.method)
-        resolve_debtor(app, order_view, order.debtor, order.payment)
+        resolve_debtor(app, order_view, order.debtor, order.payment, settings)
         stage = "order_items"
         populate_order_items(app, order_view, order)
         stage = "order_persistence"
