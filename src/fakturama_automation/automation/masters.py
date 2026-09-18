@@ -63,11 +63,16 @@ def require_unambiguous(
 
 def _dialog(app: FakturamaApp, title: str | None = None):
     process_id = app.window.element_info.process_id
-    windows = [
+    candidates = [
         window
         for window in app.desktop.windows()
+        if window is not app.window
+    ]
+    candidates.extend(app.window.descendants(control_type="Window"))
+    windows = [
+        window
+        for window in candidates
         if window.element_info.process_id == process_id
-        and window is not app.window
         and _visible(window)
         and (title is None or _safe_name(window) == title or window.window_text() == title)
     ]
@@ -89,10 +94,51 @@ def _named(root: Any, name: str, control_types: tuple[str, ...] = ("Edit",)):
 
 
 def _write(root: Any, name: str, value: str) -> None:
-    edit = _named(root, name)
+    edit = _named(root, name, ("Edit", "ComboBox"))
     edit.set_focus()
     keyboard.send_keys("^a")
     keyboard.send_keys(escape_keyboard_text(value), with_spaces=True)
+
+
+def _labelled_edits(root: Any, label_name: str) -> list[Any]:
+    labels = [
+        label
+        for label in root.descendants(control_type="Text")
+        if _safe_name(label) == label_name and _visible(label)
+    ]
+    if len(labels) != 1:
+        raise _automation_failure(
+            f"Expected one visible {label_name!r} label, found {len(labels)}"
+        )
+    label = labels[0]
+    label_rect = label.element_info.rectangle
+    controls = [
+        control
+        for control in label.parent().descendants(control_type="Edit")
+        if not _safe_name(control)
+        and _visible(control)
+        and control.element_info.rectangle.top < label_rect.bottom
+        and control.element_info.rectangle.bottom > label_rect.top
+        and control.element_info.rectangle.left >= label_rect.right
+    ]
+    controls.sort(key=lambda control: control.element_info.rectangle.left)
+    return controls
+
+
+def _editor_pane(app: FakturamaApp, tab_name: str) -> Any | None:
+    tabs = [
+        tab
+        for tab in app.window.descendants(control_type="TabItem")
+        if _safe_name(tab) == tab_name and _visible(tab)
+    ]
+    if len(tabs) != 1:
+        return None
+    panes = [
+        child
+        for child in tabs[0].parent().children(control_type="Pane")
+        if _safe_name(child) == tab_name and _visible(child)
+    ]
+    return panes[0] if len(panes) == 1 else None
 
 
 def _first_button(root: Any, names: Iterable[str]):
@@ -130,8 +176,102 @@ def _select_single_row(dialog: Any, expected_parts: tuple[str, ...], stage: str)
     return True
 
 
+def _create_debtor(
+    app: FakturamaApp,
+    order_view: OrderView,
+    debtor: Debtor,
+    payment: Payment,
+) -> None:
+    _open_data_item(app, "Debtors")
+    new_button = wait_until(
+        "new debtor action",
+        lambda: _first_button(app.window, ("Create a new debtor",)),
+        app.timeout,
+    )
+    new_button.invoke()
+    editor = wait_until(
+        "new debtor editor",
+        lambda: _editor_pane(app, "New Debtor"),
+        app.timeout,
+    )
+    _write(editor, "Company", debtor.company)
+    name_fields = _labelled_edits(editor, "First Name Last Name")
+    if debtor.first_name or debtor.last_name:
+        if len(name_fields) != 2:
+            raise _automation_failure("New debtor editor has no first/last name fields")
+        if debtor.first_name:
+            name_fields[0].set_focus()
+            keyboard.send_keys(escape_keyboard_text(debtor.first_name), with_spaces=True)
+        if debtor.last_name:
+            name_fields[1].set_focus()
+            keyboard.send_keys(escape_keyboard_text(debtor.last_name), with_spaces=True)
+
+    address = debtor.billing_address
+    _write(editor, "Street", address.street)
+    zip_city = _labelled_edits(editor, "ZIP - City")
+    if len(zip_city) != 2:
+        raise _automation_failure("New debtor editor has no ZIP/City fields")
+    zip_city[0].set_focus()
+    keyboard.send_keys(escape_keyboard_text(address.zip_code), with_spaces=True)
+    zip_city[1].set_focus()
+    keyboard.send_keys(escape_keyboard_text(address.city), with_spaces=True)
+    _write(editor, "Country", address.country)
+    if address.email:
+        _write(editor, "E-Mail", address.email)
+    if address.telephone:
+        _write(editor, "Telephone", address.telephone)
+
+    misc_tab = [
+        tab
+        for tab in editor.descendants(control_type="TabItem")
+        if _safe_name(tab) == "Miscellaneous" and _visible(tab)
+    ]
+    if len(misc_tab) != 1:
+        raise _automation_failure("New debtor editor has no Miscellaneous tab")
+    misc_tab[0].click_input()
+    _write(editor, "Alias name", debtor.alias)
+    _write(editor, "Payment", payment_code(payment.method))
+    _write(editor, "Discount", "0")
+    _write(editor, "Net or Gross", "Net")
+
+    save_candidates = [
+        button
+        for button in app.window.descendants(control_type="Button")
+        if _safe_name(button) == "Save the current contents"
+        and _visible(button)
+        and button.is_enabled()
+    ]
+    if len(save_candidates) != 1:
+        raise _automation_failure(
+            f"Expected one enabled debtor save action, found {len(save_candidates)}"
+        )
+    save_candidates[0].invoke()
+    time.sleep(0.2)
+
+    order_view.activate()
+    order_view.find_section_image("Addresses").click_input()
+    dialog = wait_until("debtor selector after creation", lambda: _dialog(app), app.timeout)
+    search = [edit for edit in dialog.descendants(control_type="Edit") if _visible(edit)]
+    if len(search) != 1:
+        raise _automation_failure("Debtor selector did not return after creation")
+    search[0].set_focus()
+    keyboard.send_keys(escape_keyboard_text(debtor.company), with_spaces=True)
+    expected_parts = tuple(
+        part
+        for part in (
+            debtor.company,
+            debtor.alias,
+            debtor.billing_address.zip_code,
+            debtor.billing_address.city,
+        )
+        if part
+    )
+    if not _select_single_row(dialog, expected_parts, "debtor"):
+        raise _automation_failure("Created debtor was not selectable from the same Order")
+
+
 def resolve_debtor(app: FakturamaApp, order_view: OrderView, debtor: Debtor, payment: Payment) -> None:
-    """Select one exact debtor, or create it through the visible contact dialog."""
+    """Select one exact debtor, or create it while retaining the open Order."""
 
     order_view.find_section_image("Addresses").click_input()
     dialog = wait_until("debtor selector", lambda: _dialog(app), app.timeout)
@@ -153,40 +293,8 @@ def resolve_debtor(app: FakturamaApp, order_view: OrderView, debtor: Debtor, pay
     if _select_single_row(dialog, expected_parts, "debtor"):
         return
 
-    new_button = _first_button(dialog, ("New Contact", "Create a new contact", "New"))
-    if new_button is None:
-        raise _automation_failure("No exact debtor and no contact-creation action available")
-    new_button.invoke()
-    editor = wait_until("new debtor editor", lambda: _dialog(app), app.timeout)
-    _write(editor, "Company", debtor.company)
-    if debtor.first_name:
-        _write(editor, "First name", debtor.first_name)
-    if debtor.last_name:
-        _write(editor, "Last name", debtor.last_name)
-    _write(editor, "Alias", debtor.alias)
-    address = debtor.billing_address
-    _write(editor, "Street", address.street)
-    _write(editor, "ZIP", address.zip_code)
-    _write(editor, "City", address.city)
-    _write(editor, "Country", address.country)
-    if address.email:
-        _write(editor, "Email", address.email)
-    if address.telephone:
-        _write(editor, "Telephone", address.telephone)
-    _write(editor, "Payment method", payment_code(payment.method))
-    save = _first_button(editor, ("Save the current contents", "OK", "Save"))
-    if save is None:
-        raise _automation_failure("New debtor editor has no save action")
-    save.invoke()
-    time.sleep(0.1)
-    dialog = wait_until("debtor selector after creation", lambda: _dialog(app), app.timeout)
-    search = [edit for edit in dialog.descendants(control_type="Edit") if _visible(edit)]
-    if len(search) != 1:
-        raise _automation_failure("Debtor selector did not return after creation")
-    search[0].set_focus()
-    keyboard.send_keys(escape_keyboard_text(debtor.company), with_spaces=True)
-    if not _select_single_row(dialog, expected_parts, "debtor"):
-        raise _automation_failure("Created debtor was not selectable from the same Order")
+    _close_dialog(dialog)
+    _create_debtor(app, order_view, debtor, payment)
 
 
 def ensure_payment_method(app: FakturamaApp | None, payment_method: str) -> str:

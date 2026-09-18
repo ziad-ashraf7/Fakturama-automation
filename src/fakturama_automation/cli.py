@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"input image does not exist: {args.image}")
     outcome = run_order_to_cash(args.image, Settings())
     print(f"{outcome.status}: {outcome.message}")
+    print(f"Run artifacts: {outcome.artifact_directory}")
     if outcome.status is OutcomeStatus.SUCCESS:
         return 0
     if outcome.status is OutcomeStatus.MANUAL_REVIEW:

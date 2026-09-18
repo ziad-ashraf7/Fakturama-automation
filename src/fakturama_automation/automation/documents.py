@@ -47,9 +47,40 @@ def _control(root: Any, name: str, control_types: tuple[str, ...] = ("Edit",)):
         for control in root.descendants(control_type=control_type)
         if _safe_name(control) == name and _visible(control)
     ]
-    if len(matches) != 1:
-        raise _automation_failure(f"Expected one visible {name!r} control, found {len(matches)}")
-    return matches[0]
+    if len(matches) == 1:
+        return matches[0]
+
+    if not matches and control_types == ("Edit",):
+        labels = [
+            label
+            for label in root.descendants(control_type="Text")
+            if _safe_name(label) == name and _visible(label)
+        ]
+        if len(labels) == 1:
+            label_rect = labels[0].element_info.rectangle
+            candidates = [
+                control
+                for control in labels[0].parent().descendants(control_type="Edit")
+                if not _safe_name(control)
+                and _visible(control)
+                and control.element_info.rectangle.top < label_rect.bottom
+                and control.element_info.rectangle.bottom > label_rect.top
+                and control.element_info.rectangle.left >= label_rect.right
+            ]
+            if candidates:
+                candidates.sort(
+                    key=lambda control: (
+                        control.element_info.rectangle.left - label_rect.right,
+                        control.element_info.rectangle.top,
+                    )
+                )
+                return candidates[0]
+
+    raise _automation_failure(
+        f"Expected one visible {name!r} control, found {len(matches)}"
+    )
+
+
 
 
 def _write(root: Any, name: str, value: str) -> None:

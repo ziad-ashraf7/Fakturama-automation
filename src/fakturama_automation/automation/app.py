@@ -157,6 +157,9 @@ class FakturamaApp:
             Application(backend="uia").start(str(executable))
             window = wait_until("one Fakturama window", locate, settings.uia_timeout_seconds)
 
+        if window.is_minimized():
+            window.restore()
+        window.set_focus()
         wait_until(
             "visible and enabled Fakturama window",
             lambda: window if _visible(window) else None,
@@ -277,8 +280,8 @@ class OrderView:
     def activate(self) -> None:
         try:
             self.tab.select()
-        except (AttributeError, RuntimeError):
-            self.tab.set_focus()
+        except Exception:  # noqa: BLE001
+            self.tab.click_input()
 
     def find_section_image(self, section_name: str, role: str = "upper") -> UIAWrapper:
         if role != "upper":

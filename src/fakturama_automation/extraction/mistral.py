@@ -9,6 +9,7 @@ import platform
 import re
 import sys
 import traceback
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -46,6 +47,45 @@ def _sanitize_diagnostic(value: object, secret: str | None) -> str:
         text,
     )
     return text
+
+
+def _json_safe(value: object, secret: str | None = None) -> object:
+    if isinstance(value, BaseModel) or hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        safe: dict[str, object] = {}
+        for key, item in value.items():
+            normalized = str(key).casefold()
+            if any(term in normalized for term in ("authorization", "api_key", "token", "secret")):
+                safe[str(key)] = "[REDACTED]"
+            else:
+                safe[str(key)] = _json_safe(item, secret)
+        return safe
+    if isinstance(value, list | tuple):
+        return [_json_safe(item, secret) for item in value]
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+    if isinstance(value, str):
+        return _sanitize_diagnostic(value, secret)
+    if value is None or isinstance(value, int | float | bool):
+        return value
+    return _sanitize_diagnostic(value, secret)
+
+
+def _write_json(path: Path, value: object, secret: str | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(_json_safe(value, secret), indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _append_run_log(artifact_directory: Path | None, message: str) -> None:
+    if artifact_directory is None:
+        return
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    with (artifact_directory / "run.log").open("a", encoding="utf-8") as log:
+        log.write(message.rstrip() + "\n")
 
 
 def _write_ocr_diagnostic(
@@ -118,10 +158,10 @@ class DraftModel(BaseModel):
 
 
 class AddressExtractionDraft(DraftModel):
-    street: str | None = None
-    zip_code: str | None = None
-    city: str | None = None
-    country: str | None = None
+    street: str | None
+    zip_code: str | None
+    city: str | None
+    country: str | None
     email: str | None = None
     telephone: str | None = None
     additional_name: str | None = None
@@ -130,17 +170,17 @@ class AddressExtractionDraft(DraftModel):
 
 
 class DebtorExtractionDraft(DraftModel):
-    company: str | None = None
+    company: str | None
     first_name: str | None = None
     last_name: str | None = None
-    alias: str | None = None
-    billing_address: AddressExtractionDraft | None = None
+    alias: str | None
+    billing_address: AddressExtractionDraft | None
     delivery_address: AddressExtractionDraft | None = None
 
 
 class PaymentExtractionDraft(DraftModel):
-    method: str | None = None
-    status: Literal["PAID", "UNPAID"] | None = None
+    method: str | None
+    status: Literal["PAID", "UNPAID"] | None
     payment_date: date | None = None
 
 
@@ -155,13 +195,13 @@ def _validate_decimal_string(value: str | None) -> str | None:
 
 
 class OrderItemExtractionDraft(DraftModel):
-    sku: str | None = None
-    description: str | None = None
-    quantity: str | None = None
-    unit_net: str | None = None
-    vat_percent: str | None = None
-    discount_percent: str | None = None
-    source_total: str | None = None
+    sku: str | None
+    description: str | None
+    quantity: str | None
+    unit_net: str | None
+    vat_percent: str | None
+    discount_percent: str | None
+    source_total: str | None
 
     _validate_financial_strings = field_validator(
         "quantity",
@@ -173,9 +213,9 @@ class OrderItemExtractionDraft(DraftModel):
 
 
 class OrderTotalsExtractionDraft(DraftModel):
-    net: str | None = None
-    vat: str | None = None
-    gross: str | None = None
+    net: str | None
+    vat: str | None
+    gross: str | None
     discount_percent: str | None = None
     shipping: str | None = None
 
@@ -189,14 +229,14 @@ class OrderTotalsExtractionDraft(DraftModel):
 
 
 class OrderExtractionDraft(DraftModel):
-    """Potentially incomplete structured annotation returned by Mistral."""
+    """Structured annotation with required source properties that may be null."""
 
-    order_date: date | None = None
-    external_reference: str | None = None
-    debtor: DebtorExtractionDraft | None = None
-    payment: PaymentExtractionDraft | None = None
-    items: list[OrderItemExtractionDraft] | None = None
-    totals: OrderTotalsExtractionDraft | None = None
+    order_date: date | None
+    external_reference: str | None
+    debtor: DebtorExtractionDraft | None
+    payment: PaymentExtractionDraft | None
+    items: list[OrderItemExtractionDraft] | None
+    totals: OrderTotalsExtractionDraft | None
     uncertain_fields: list[str] = Field(default_factory=list)
 
 
@@ -275,11 +315,32 @@ def _is_required_uncertainty(path: str, required_paths: set[str]) -> bool:
     )
 
 
-def validate_extraction(draft: OrderExtractionDraft) -> OrderInput:
-    """Promote only complete and reconciled source data into strict workflow input."""
+def _value_at_path(draft: OrderExtractionDraft, path: str) -> object:
+    current: object = draft.model_dump()
+    for part in re.findall(r"[^.\[\]]+", path):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list):
+            current = current[int(part)]
+        else:
+            return None
+    return current
 
-    missing = _required_paths(draft)
-    all_required = {
+
+def extraction_validation_issues(draft: OrderExtractionDraft) -> list[dict[str, object]]:
+    required_paths = set(_required_paths(draft))
+    issues: list[dict[str, object]] = []
+    for path in sorted(required_paths):
+        issues.append(
+            {
+                "path": path,
+                "value": _value_at_path(draft, path),
+                "classification": "missing",
+                "reason": "Mistral omitted a required source value.",
+                "rule": "Required source fields must be present before Fakturama automation.",
+            }
+        )
+    required_uncertainty_paths = {
         "order_date",
         "external_reference",
         "debtor.company",
@@ -294,12 +355,10 @@ def validate_extraction(draft: OrderExtractionDraft) -> OrderInput:
         "totals.net",
         "totals.vat",
         "totals.gross",
-        "totals.discount_percent",
-        "totals.shipping",
     }
     if draft.items:
         for index in range(len(draft.items)):
-            all_required.update(
+            required_uncertainty_paths.update(
                 f"items[{index}].{field}"
                 for field in (
                     "sku",
@@ -311,10 +370,36 @@ def validate_extraction(draft: OrderExtractionDraft) -> OrderInput:
                     "source_total",
                 )
             )
-    uncertain = [
-        path for path in draft.uncertain_fields if _is_required_uncertainty(path, all_required)
-    ]
-    if missing or uncertain:
+    optional_order_level_paths = {"totals.discount_percent", "totals.shipping"}
+    for path in draft.uncertain_fields:
+        if path in optional_order_level_paths and _value_at_path(draft, path) is None:
+            continue
+        if (
+            path not in optional_order_level_paths
+            and not _is_required_uncertainty(path, required_uncertainty_paths)
+        ):
+            continue
+        issues.append(
+            {
+                "path": path,
+                "value": _value_at_path(draft, path),
+                "classification": "uncertain",
+                "reason": "Mistral marked the source value as uncertain.",
+                "rule": "Uncertain required source values require manual review.",
+            }
+        )
+    return issues
+
+
+def validate_extraction(draft: OrderExtractionDraft) -> OrderInput:
+    """Promote only complete and reconciled source data into strict workflow input."""
+
+    issues = extraction_validation_issues(draft)
+    if issues:
+        missing = [str(issue["path"]) for issue in issues if issue["classification"] == "missing"]
+        uncertain = [
+            str(issue["path"]) for issue in issues if issue["classification"] == "uncertain"
+        ]
         details = []
         if missing:
             details.append(f"missing: {', '.join(missing)}")
@@ -339,7 +424,7 @@ def validate_extraction(draft: OrderExtractionDraft) -> OrderInput:
 class MistralOrderExtractor:
     """The single supported extraction provider."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, artifact_directory: Path | None = None) -> None:
         api_key = settings.mistral_api_key
         if (
             api_key is None
@@ -351,6 +436,7 @@ class MistralOrderExtractor:
                 stage="configuration",
             )
         self._settings = settings
+        self._artifact_directory = artifact_directory
         try:
             self._client = Mistral(api_key=api_key.get_secret_value())
         except Exception as error:
@@ -387,6 +473,24 @@ class MistralOrderExtractor:
                 error,
                 stage="ocr.process",
             )
+            secret = (
+                self._settings.mistral_api_key.get_secret_value()
+                if self._settings.mistral_api_key is not None
+                else None
+            )
+            _write_json(
+                self._artifact_directory / "mistral-response.json"
+                if self._artifact_directory is not None
+                else Path("artifacts/debug/mistral-response.json"),
+                {
+                    "status": "provider_call_failed",
+                    "model": self._settings.mistral_model,
+                    "error_class": type(error).__name__,
+                    "error": error,
+                },
+                secret,
+            )
+            _append_run_log(self._artifact_directory, f"extraction provider failure: {type(error).__name__}")
             raise ExtractionFailure(
                 "Mistral OCR request failed",
                 stage="extraction",
@@ -416,4 +520,62 @@ class MistralOrderExtractor:
                 "Malformed Mistral annotation",
                 stage="extraction",
             )
-        return validate_extraction(parse_annotation(payload))
+        secret = (
+            self._settings.mistral_api_key.get_secret_value()
+            if self._settings.mistral_api_key is not None
+            else None
+        )
+        if self._artifact_directory is not None:
+            _write_json(
+                self._artifact_directory / "mistral-response.json",
+                {
+                    "model": self._settings.mistral_model,
+                    "response": response,
+                },
+                secret,
+            )
+        draft = parse_annotation(payload)
+        if self._artifact_directory is not None:
+            _write_json(
+                self._artifact_directory / "order-extraction-draft.json",
+                draft,
+                secret,
+            )
+        try:
+            order = validate_extraction(draft)
+        except ManualReviewRequired as error:
+            issues = extraction_validation_issues(draft)
+            if not issues:
+                issues = [
+                    {
+                        "path": "$",
+                        "value": None,
+                        "classification": "inconsistent",
+                        "reason": str(error),
+                        "rule": "Independent Decimal reconciliation must pass.",
+                    }
+                ]
+            if self._artifact_directory is not None:
+                _write_json(
+                    self._artifact_directory / "validation-result.json",
+                    {
+                        "status": "manual_review",
+                        "message": str(error),
+                        "issues": issues,
+                    },
+                    secret,
+                )
+            _append_run_log(
+                self._artifact_directory,
+                f"validation result: MANUAL_REVIEW ({error})",
+            )
+            raise
+        if self._artifact_directory is not None:
+            _write_json(
+                self._artifact_directory / "validation-result.json",
+                {"status": "valid", "issues": []},
+                secret,
+            )
+            _write_json(self._artifact_directory / "order-input.json", order, secret)
+        _append_run_log(self._artifact_directory, "validation result: VALID OrderInput")
+        return order
