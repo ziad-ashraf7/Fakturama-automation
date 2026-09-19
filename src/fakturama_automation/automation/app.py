@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -87,6 +87,50 @@ def escape_keyboard_text(value: str) -> str:
     return "".join(escaped.get(character, character) for character in value)
 
 
+def _normalize_product_text(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def complete_product_picker_selection(
+    sku: str,
+    *,
+    picker_closed: bool,
+    candidates: Sequence[str],
+    press_enter: Callable[[], None],
+    wait_for_close: Callable[[], bool],
+    verify_inserted: Callable[[], bool],
+) -> str:
+    """Complete one exact product selection without guessing at opaque rows."""
+    if picker_closed:
+        if not verify_inserted():
+            raise _automation_failure(
+                f"Product picker closed, but expected SKU {sku!r} was not inserted"
+            )
+        return "auto"
+    if not candidates:
+        raise _automation_failure(
+            f"Product auto-selection timed out; no visible result was verified for {sku!r}"
+        )
+    if len(candidates) != 1:
+        raise _automation_failure(
+            f"Product auto-selection timed out; visible results are ambiguous for {sku!r}: "
+            f"{list(candidates)!r}"
+        )
+    if _normalize_product_text(candidates[0]) != _normalize_product_text(sku):
+        raise _automation_failure(
+            f"Product auto-selection timed out; visible candidate {candidates[0]!r} "
+            f"does not match requested SKU {sku!r}"
+        )
+    press_enter()
+    if not wait_for_close():
+        raise _automation_failure(
+            f"Product picker did not close after guarded Enter for SKU {sku!r}"
+        )
+    if not verify_inserted():
+        raise _automation_failure(
+            f"Guarded Enter did not insert expected SKU {sku!r} into the Order"
+        )
+    return "enter"
 def normalize_grid_readback(column: str, displayed: str) -> Decimal | str:
     """Normalize a visible/editor value without losing financial precision."""
 
@@ -333,21 +377,101 @@ class OrderView:
         ]
         if len(search_edits) != 1:
             raise _automation_failure("Product search field is not unique")
-        search_edits[0].set_edit_text(sku)
-
-        wait_until(
-            f"automatic exact selection of product {sku!r}",
-            lambda: True if self.app._picker() is None else None,
-            self.app.timeout,
-        )
+        search_edits[0].set_focus()
+        keyboard.send_keys("^a")
+        keyboard.send_keys("{BACKSPACE}")
+        keyboard.send_keys(escape_keyboard_text(sku), with_spaces=True)
+        auto_timeout = min(self.app.timeout, 2.0)
+        picker_closed = False
+        try:
+            wait_until(
+                f"automatic exact selection of product {sku!r}",
+                lambda: True if self.app._picker() is None else None,
+                auto_timeout,
+            )
+            picker_closed = True
+        except AutomationFailure:
+            picker = self.app._picker()
+            if picker is None:
+                picker_closed = True
+            else:
+                candidates = self._visible_product_candidates(picker, search_panes[0])
+                complete_product_picker_selection(
+                    sku,
+                    picker_closed=False,
+                    candidates=candidates,
+                    press_enter=lambda: keyboard.send_keys("{ENTER}"),
+                    wait_for_close=self._wait_for_product_picker_close,
+                    verify_inserted=lambda: self._verify_product_inserted(sku),
+                )
+        if picker_closed:
+            complete_product_picker_selection(
+                sku,
+                picker_closed=True,
+                candidates=(),
+                press_enter=lambda: keyboard.send_keys("{ENTER}"),
+                wait_for_close=lambda: True,
+                verify_inserted=lambda: self._verify_product_inserted(sku),
+            )
         wait_until("dirty New Order", lambda: True if self._is_dirty() else None, self.app.timeout)
+
+    def _wait_for_product_picker_close(self) -> bool:
+        try:
+            wait_until(
+                "product picker to close after guarded Enter",
+                lambda: True if self.app._picker() is None else None,
+                self.app.timeout,
+            )
+        except AutomationFailure:
+            return False
+        return True
+
+    def _verify_product_inserted(self, sku: str) -> bool:
         grid = self._items_grid()
         settings = self.app.settings
         if settings is None:
             raise _automation_failure("Fakturama app has no Settings for Items-grid OCR")
         from fakturama_automation.automation.visual_items import select_item_row_visually
 
-        select_item_row_visually(grid, sku, settings)
+        return select_item_row_visually(grid, sku, settings)
+
+    def _visible_product_candidates(
+        self, picker: UIAWrapper, search_pane: UIAWrapper
+    ) -> tuple[str, ...]:
+        settings = self.app.settings
+        if settings is None:
+            raise _automation_failure("Fakturama app has no Settings for product-picker OCR")
+        search_rect = search_pane.element_info.rectangle
+        panes = [
+            pane
+            for pane in picker.descendants(control_type="Pane")
+            if _safe_name(pane) == ""
+            and _visible(pane)
+            and pane.element_info.class_name == _WINDOW_CLASS
+            and pane.element_info.rectangle.top >= search_rect.bottom
+            and not pane.descendants(control_type="Edit")
+        ]
+        if not panes:
+            raise _automation_failure("Product picker has no visible result area after exact search")
+        largest_area = max(
+            pane.element_info.rectangle.width() * pane.element_info.rectangle.height()
+            for pane in panes
+        )
+        result_panes = [
+            pane
+            for pane in panes
+            if pane.element_info.rectangle.width() * pane.element_info.rectangle.height() == largest_area
+        ]
+        if len(result_panes) != 1:
+            raise _automation_failure(
+                "Product picker result area is ambiguous after exact search"
+            )
+        from fakturama_automation.automation.visual_items import (
+            _ocr_markdown,
+            markdown_item_rows,
+        )
+        result_pane = result_panes[0]
+        return tuple(markdown_item_rows(_ocr_markdown(result_pane.capture_as_image(), settings)))
 
     def _read_visible_cell(self, sku: str, column: str) -> str:
         settings = self.app.settings
