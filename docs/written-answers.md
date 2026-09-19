@@ -2,16 +2,27 @@
 
 ## Approach
 
-The implementation uses one deterministic Python workflow. Mistral produces structured extraction data, but it never controls Fakturama. The workflow validates the data with Pydantic, reconciles all source totals with Decimal calculations, and then uses semantic pywinauto UIA controls.
+The implementation uses one deterministic Python workflow. Mistral produces
+structured extraction data, but never controls Fakturama. The workflow validates the
+data with Pydantic, reconciles financial values with Decimal, and then uses semantic
+pywinauto UIA controls. Exact master-data matching and persisted Documents
+verification are preferred over guessing.
 
-The most important reliability choice is postcondition verification: saving an Order or Invoice is not accepted as success until the persisted Documents state can be observed. Product selection uses Fakturama's verified unique-filter behavior because the SWT table is opaque to UIA. The Items grid uses the smallest proven keyboard path and read-back.
+## If I had 3 more hours
 
-## If I had three more hours
+I would spend the time on the remaining, evidenced risks:
 
-I would spend the time on the risks that remained after the demonstrated run:
+1. Finish and re-verify automatic secondary Delivery Address creation/update for the
+   exact Fakturama installation, including role assignment and post-save persistence.
+2. Harden opaque Product/Items/Documents table verification with installation-specific
+   row parsing, dynamic scrolling coverage, and more controlled screenshots.
+3. Add recovery for stale/interrupted Fakturama tabs and modal state, plus bounded
+   retry/backoff for transient Mistral/API disconnects.
+4. Add clean-slate fixtures covering missing VAT, missing Products, and duplicate or
+   ambiguous master data without relying on a warm workspace.
+5. Expand failure-path tests and capture a short recorded demonstration covering both
+   SUCCESS and safe MANUAL_REVIEW/FAILED outcomes.
 
-1. Finish and re-verify automated secondary debtor-address creation/update for the exact Fakturama installation. The native editor reuses one SWT content Pane across address tabs, and the English role value must be scoped and persisted without changing the Main address.
-2. Replace the Documents screenshot/manual evidence boundary with a small, installation-specific reader for the custom SWT Documents rows, so generated number, state, reference, and total are read back programmatically.
-3. Add one more clean run covering a genuinely missing VAT/Product branch and strengthen persisted Invoice payment read-back assertions, including the compact date display used by the payment control.
-
-I would not add another OCR provider, a database, a web service, computer vision framework, or checkpoint system; those would expand the take-home beyond its demonstrated risk.
+I would not add another OCR provider, a database, a web service, computer-vision
+framework, checkpoint store, or generic workflow layer; those would expand the
+solution beyond the assignment and timebox.
