@@ -208,6 +208,32 @@ def row_band_for_sku(
     return bands[matches[0]]
 
 
+def cell_text_for_sku(markdown: str, sku: str, column: str) -> str:
+    headers, rows = _markdown_table(markdown)
+    item_column = _item_column(headers)
+    column_index = _column_index(headers, column)
+    matches = [
+        row
+        for row in rows
+        if item_column < len(row) and _normalize(row[item_column]) == _normalize(sku)
+    ]
+    if len(matches) > 1:
+        raise MasterDataConflict("Multiple exact product rows", stage="product")
+    if not matches:
+        raise _automation_failure(f"Visible product row {sku!r} was not verified")
+    row = matches[0]
+    if column_index >= len(row):
+        raise _automation_failure(f"Visible product row {sku!r} has no {column!r} value")
+    return row[column_index].strip()
+
+
+def read_item_cell_visually(
+    grid: Any, sku: str, column: str, settings: Settings
+) -> str:
+    image = grid.capture_as_image()
+    return cell_text_for_sku(_ocr_markdown(image, settings), sku, column)
+
+
 def item_cell_for_sku(
     image: Any, markdown: str, sku: str
 ) -> tuple[int, int, int, int]:

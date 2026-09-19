@@ -349,6 +349,14 @@ class OrderView:
 
         select_item_row_visually(grid, sku, settings)
 
+    def _read_visible_cell(self, sku: str, column: str) -> str:
+        settings = self.app.settings
+        if settings is None:
+            raise _automation_failure("Fakturama app has no Settings for Items-grid OCR")
+        from fakturama_automation.automation.visual_items import read_item_cell_visually
+
+        return read_item_cell_visually(self._items_grid(), sku, column, settings)
+
     def _activate_grid_cell(self, sku: str, column: str) -> tuple[UIAWrapper, tuple[int, int, int, int]]:
         settings = self.app.settings
         if settings is None:
@@ -400,8 +408,14 @@ class OrderView:
             sku, "U.Price", unit_price
         )
 
-        self._activate_grid_cell(sku, "VAT")
-        read_back["VAT"] = self._edit_vat(vat, editor_open=True)
+        current_vat = self._read_visible_cell(sku, "VAT")
+        if normalize_grid_readback("VAT", current_vat) == normalize_grid_readback(
+            "VAT", vat
+        ):
+            read_back["VAT"] = current_vat
+        else:
+            self._activate_grid_cell(sku, "VAT")
+            read_back["VAT"] = self._edit_vat(vat, editor_open=True)
 
         read_back["Discount"] = self._edit_direct_numeric(
             sku, "Discount", discount_percent
