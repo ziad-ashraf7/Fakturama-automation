@@ -15,6 +15,11 @@ image -> Mistral extraction -> validated OrderInput
 The implementation is a focused Windows CLI for Fakturama 2.2.0. The local
 docs/assignment.pdf is the development source of truth and is intentionally not
 committed.
+## Demo
+
+The following recording demonstrates the complete image-to-cash automation workflow in Fakturama.
+
+[▶ Watch the full automation demo](docs/recordings/Demo.mp4)
 
 ## Features
 
