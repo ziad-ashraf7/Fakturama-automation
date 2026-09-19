@@ -5,6 +5,7 @@ import pytest
 
 from fakturama_automation.automation import documents
 from fakturama_automation.automation.documents import (
+    _assert_invoice_saved,
     _find_invoice_documents_row,
     _invoke_named,
     _select_invoice_payment_method,
@@ -191,6 +192,33 @@ def test_normalize_payment_value() -> None:
 
     assert normalize_grid_readback("Value", "$678.30") == Decimal("678.30")
 
+
+class _FakeInvoiceTab:
+    def __init__(self, name: str) -> None:
+        self.element_info = SimpleNamespace(name=name)
+
+    def is_visible(self) -> bool:
+        return True
+
+    def is_enabled(self) -> bool:
+        return True
+
+
+class _FakeInvoiceTabsRoot:
+    def __init__(self, name: str) -> None:
+        self.tab = _FakeInvoiceTab(name)
+
+    def descendants(self, control_type: str):
+        return [self.tab] if control_type == "TabItem" else []
+
+
+def test_invoice_number_does_not_override_dirty_tab() -> None:
+    with pytest.raises(AutomationFailure, match="Invoice remained unsaved after Save"):
+        _assert_invoice_saved(_FakeInvoiceTabsRoot("*New Invoice"))
+
+
+def test_clean_generated_invoice_tab_allows_documents_verification() -> None:
+    _assert_invoice_saved(_FakeInvoiceTabsRoot("INV000009"))
 
 def _invoice_row(
     number: str = "INV000001",

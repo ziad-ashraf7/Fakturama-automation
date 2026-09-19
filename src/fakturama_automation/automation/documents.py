@@ -47,6 +47,17 @@ def _normalize_document_value(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _assert_invoice_saved(root: Any) -> None:
+    dirty_invoice_tabs = [
+        tab
+        for tab in root.descendants(control_type="TabItem")
+        if _visible(tab)
+        and _safe_name(tab).lstrip().startswith("*")
+        and "invoice" in _safe_name(tab).casefold()
+    ]
+    if dirty_invoice_tabs:
+        raise _automation_failure("Invoice remained unsaved after Save")
+
 def verify_persisted_invoice(
     *,
     number: str,
@@ -681,6 +692,7 @@ def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> Persist
         _set_segmented_date(root, "at", order.payment.payment_date)
         _set_currency_value(root, "Value", order.totals.gross)
     _invoke_named(root, "Save the current contents")
+    _assert_invoice_saved(root)
 
     def generated_number() -> str | None:
         try:
