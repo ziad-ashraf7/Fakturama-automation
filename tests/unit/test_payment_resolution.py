@@ -6,7 +6,11 @@ import pytest
 from fakturama_automation import workflow
 from fakturama_automation.automation import masters
 from fakturama_automation.automation.masters import payment_term_decision
-from fakturama_automation.domain.outcomes import MasterDataConflict, OutcomeStatus
+from fakturama_automation.domain.outcomes import (
+    AutomationFailure,
+    MasterDataConflict,
+    OutcomeStatus,
+)
 from fakturama_automation.workflow import complete_invoice_phase
 
 
@@ -189,6 +193,73 @@ def test_payment_lookup_opens_terms_master_before_search(
     assert events == ["open:terms of payment", "pane", "search", "decision"]
 
 
+
+def test_payment_term_verifier_ocr_uses_dynamic_result_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Pane:
+        def __init__(self, markdown: str | None = None) -> None:
+            self.markdown = markdown
+            self.captured = False
+
+        def capture_as_image(self) -> object:
+            self.captured = True
+            if self.markdown is None:
+                raise AssertionError("the full content pane must not be captured")
+            return object()
+
+    content_pane = _Pane()
+    result_pane = _Pane("ignored")
+    search = SimpleNamespace()
+    app = SimpleNamespace(
+        settings=SimpleNamespace(mistral_api_key=object()),
+    )
+    markdown = """\
+| Standard | Name | Description | Discount | Disc. Days | Net Days |
+| --- | --- | --- | --- | --- | --- |
+|  | Credit transfer | Credit transfer | 0% | 0 | 0 |
+"""
+
+    monkeypatch.setattr(masters, "_labelled_edits", lambda _pane, _label: [search])
+    monkeypatch.setattr(
+        masters,
+        "_payment_terms_result_pane",
+        lambda _pane, _search: result_pane,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "fakturama_automation.automation.visual_items._ocr_markdown",
+        lambda _image, _settings: markdown,
+    )
+
+    assert masters._visible_payment_term_decision(
+        app, content_pane, "Credit transfer"
+    ) == "reuse"
+    assert content_pane.captured is False
+    assert result_pane.captured is True
+
+
+def test_payment_term_persistence_fails_when_no_exact_visible_row_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = SimpleNamespace(settings=object(), timeout=1, _order_view=None)
+    pane = object()
+    search = SimpleNamespace(set_edit_text=lambda _value: None)
+    decisions = iter(("create", "create"))
+
+    monkeypatch.setattr(masters, "_open_data_item", lambda _app, _name: None)
+    monkeypatch.setattr(masters, "_payment_terms_pane", lambda _app: pane)
+    monkeypatch.setattr(masters, "_labelled_edits", lambda _pane, _label: [search])
+    monkeypatch.setattr(
+        masters,
+        "_visible_payment_term_decision",
+        lambda _app, _pane, _expected: next(decisions),
+    )
+    monkeypatch.setattr(masters, "_create_payment_term", lambda _app, _expected: None)
+
+    with pytest.raises(AutomationFailure, match="was not persisted"):
+        masters.ensure_payment_method(app, "Bank Transfer")
+
 def test_payment_term_lookup_uses_name_column_when_header_is_ocr_visible() -> None:
     markdown = """\
 | Standard | Name | Description | Discount | Disc. Days | Net Days |
@@ -217,6 +288,15 @@ def test_payment_term_lookup_creates_when_headerless_filtered_table_is_empty() -
 
     assert masters.payment_term_lookup_decision(markdown, "Credit transfer") == "create"
 
+def test_payment_term_lookup_rejects_exact_name_with_wrong_fields() -> None:
+    markdown = """\
+| Standard | Name | Description | Discount | Disc. Days | Net Days |
+| --- | --- | --- | --- | --- | --- |
+|  | Credit transfer | Wrong description | 0% | 0 | 0 |
+"""
+
+    with pytest.raises(AutomationFailure, match="did not contain exact"):
+        masters.payment_term_lookup_decision(markdown, "Credit transfer")
 
 def test_payment_term_lookup_rejects_ambiguous_headerless_exact_rows() -> None:
     markdown = """\

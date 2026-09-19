@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Sequence
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pywinauto import keyboard
@@ -605,8 +605,39 @@ def _is_markdown_separator(cells: Sequence[str]) -> bool:
     )
 
 
+def _payment_term_row_matches(
+    headers: tuple[str, ...], row: tuple[str, ...], expected: str
+) -> bool:
+    positions = {
+        normalize_display(header): index for index, header in enumerate(headers)
+    }
+    required = {"name", "description", "discount", "disc. days", "net days"}
+    if not required.issubset(positions):
+        return True
+
+    def value(header: str) -> str:
+        index = positions[header]
+        return normalize_display(row[index]) if index < len(row) else ""
+
+    def is_zero(value_text: str) -> bool:
+        try:
+            return Decimal(value_text.replace("%", "").strip()) == 0
+        except InvalidOperation:
+            return False
+
+    expected_value = normalize_display(expected)
+    return (
+        value("name") == expected_value
+        and value("description") == expected_value
+        and is_zero(value("discount"))
+        and is_zero(value("disc. days"))
+        and is_zero(value("net days"))
+    )
+
+
 def payment_term_lookup_decision(markdown: str, expected: str) -> str:
     headers, rows = _payment_term_table(markdown)
+    expected_normalized = normalize_display(expected)
     if headers is not None:
         name_columns = [
             index
@@ -615,14 +646,29 @@ def payment_term_lookup_decision(markdown: str, expected: str) -> str:
         ]
         if name_columns:
             name_column = name_columns[0]
-            names = tuple(
-                row[name_column].strip()
+            named_rows = [
+                row
                 for row in rows
-                if name_column < len(row) and row[name_column].strip()
+                if name_column < len(row)
+                and normalize_display(row[name_column]) == expected_normalized
+            ]
+            if len(named_rows) > 1:
+                raise MasterDataConflict(
+                    f"Multiple visible payment terms named {expected}",
+                    stage="payment_method",
+                )
+            if named_rows:
+                if _payment_term_row_matches(headers, named_rows[0], expected):
+                    return "reuse"
+                raise _automation_failure(
+                    f"Visible payment-term rows did not contain exact {expected!r}"
+                )
+            if not rows:
+                return "create"
+            raise _automation_failure(
+                f"Visible payment-term rows did not contain exact {expected!r}"
             )
-            return payment_term_decision(names, expected)
 
-    expected_normalized = normalize_display(expected)
     matching_rows = [
         row
         for row in rows
@@ -640,7 +686,6 @@ def payment_term_lookup_decision(markdown: str, expected: str) -> str:
         f"Visible payment-term rows did not contain exact {expected!r}"
     )
 
-
 def _payment_terms_pane(app: FakturamaApp) -> Any:
     tab = app.find_unique("terms of payment", "TabItem")
     tab.click_input()
@@ -654,6 +699,41 @@ def _payment_terms_pane(app: FakturamaApp) -> Any:
     return panes[0]
 
 
+def _payment_terms_result_pane(pane: Any, search: Any) -> Any:
+    search_rect = search.element_info.rectangle
+    pane_rect = pane.element_info.rectangle
+    candidates: list[Any] = []
+    seen: set[tuple[int | None, int, int, int, int]] = set()
+    for candidate in pane.descendants(control_type="Pane"):
+        if not _visible(candidate) or candidate.element_info.class_name != "SWT_Window0":
+            continue
+        rect = candidate.element_info.rectangle
+        key = (candidate.handle, rect.left, rect.top, rect.right, rect.bottom)
+        if key in seen:
+            continue
+        seen.add(key)
+        if (
+            rect.top >= search_rect.bottom
+            and rect.left >= pane_rect.left
+            and rect.right <= pane_rect.right
+            and rect.bottom <= pane_rect.bottom
+            and rect.right > rect.left
+            and rect.bottom > rect.top
+        ):
+            candidates.append(candidate)
+    if not candidates:
+        raise _automation_failure("Could not locate the current payment-term result Pane")
+    return max(
+        candidates,
+        key=lambda candidate: (
+            candidate.element_info.rectangle.right - candidate.element_info.rectangle.left
+        )
+        * (
+            candidate.element_info.rectangle.bottom
+            - candidate.element_info.rectangle.top
+        ),
+    )
+
 def _visible_payment_term_decision(app: FakturamaApp, pane: Any, expected: str) -> str:
     settings = app.settings
     if settings is None or settings.mistral_api_key is None:
@@ -663,8 +743,9 @@ def _visible_payment_term_decision(app: FakturamaApp, pane: Any, expected: str) 
         raise _automation_failure("Terms-of-payment view has no unique Search field")
     from fakturama_automation.automation.visual_items import _ocr_markdown
 
+    result_pane = _payment_terms_result_pane(pane, search[0])
     return payment_term_lookup_decision(
-        _ocr_markdown(pane.capture_as_image(), settings), expected
+        _ocr_markdown(result_pane.capture_as_image(), settings), expected
     )
 
 
