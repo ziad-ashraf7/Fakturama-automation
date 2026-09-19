@@ -181,9 +181,50 @@ def test_payment_lookup_opens_terms_master_before_search(
     monkeypatch.setattr(masters, "_labelled_edits", lambda _pane, _label: [search])
     monkeypatch.setattr(
         masters,
-        "_visible_payment_term_names",
-        lambda _app, _pane: ("Credit transfer",),
+        "_visible_payment_term_decision",
+        lambda _app, _pane, _expected: events.append("decision") or "reuse",
     )
 
     assert masters.ensure_payment_method(app, "Bank Transfer") == "Credit transfer"
-    assert events == ["open:terms of payment", "pane", "search"]
+    assert events == ["open:terms of payment", "pane", "search", "decision"]
+
+
+def test_payment_term_lookup_uses_name_column_when_header_is_ocr_visible() -> None:
+    markdown = """\
+| Standard | Name | Description | Discount | Disc. Days | Net Days |
+| --- | --- | --- | --- | --- | --- |
+|  | Credit transfer | Credit transfer | 0% | 0 | 0 |
+"""
+
+    assert masters.payment_term_lookup_decision(markdown, "Credit transfer") == "reuse"
+
+
+def test_payment_term_lookup_reuses_exact_row_when_name_header_is_missing() -> None:
+    markdown = """\
+| Standard | Description | Discount | Disc. Days | Net Days |
+| --- | --- | --- | --- | --- |
+|  | Credit transfer | 0% | 0 | 0 |
+"""
+
+    assert masters.payment_term_lookup_decision(markdown, "Credit transfer") == "reuse"
+
+
+def test_payment_term_lookup_creates_when_headerless_filtered_table_is_empty() -> None:
+    markdown = """\
+| Standard | Description | Discount | Disc. Days | Net Days |
+| --- | --- | --- | --- | --- |
+"""
+
+    assert masters.payment_term_lookup_decision(markdown, "Credit transfer") == "create"
+
+
+def test_payment_term_lookup_rejects_ambiguous_headerless_exact_rows() -> None:
+    markdown = """\
+| Standard | Description | Discount | Disc. Days | Net Days |
+| --- | --- | --- | --- | --- |
+|  | Credit transfer | Credit transfer | 0% | 0 |
+|  | Credit transfer | Credit transfer | 0% | 0 |
+"""
+
+    with pytest.raises(MasterDataConflict, match="Credit transfer"):
+        masters.payment_term_lookup_decision(markdown, "Credit transfer")

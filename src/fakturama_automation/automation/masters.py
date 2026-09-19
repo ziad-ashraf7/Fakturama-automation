@@ -558,7 +558,7 @@ def payment_term_decision(names: Sequence[str], expected: str) -> str:
     return "reuse" if matches else "create"
 
 
-def _payment_term_names_from_markdown(markdown: str) -> tuple[str, ...]:
+def _payment_term_table(markdown: str) -> tuple[tuple[str, ...] | None, tuple[tuple[str, ...], ...]]:
     lines = [line.strip() for line in markdown.splitlines() if line.strip().startswith("|")]
     header_index = next(
         (
@@ -568,24 +568,77 @@ def _payment_term_names_from_markdown(markdown: str) -> tuple[str, ...]:
         ),
         None,
     )
-    if header_index is None:
-        raise _automation_failure("Payment terms OCR has no Name column")
-    headers = _markdown_cells(lines[header_index])
-    name_column = next(
-        index for index, cell in enumerate(headers) if normalize_display(cell) == "name"
+    separator_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if _is_markdown_separator(_markdown_cells(line))
+        ),
+        None,
     )
-    names: list[str] = []
-    for line in lines[header_index + 1 :]:
+    data_start = (
+        separator_index + 1
+        if separator_index is not None
+        else header_index + 1
+        if header_index is not None
+        else 0
+    )
+    rows: list[tuple[str, ...]] = []
+    for line in lines[data_start:]:
         cells = _markdown_cells(line)
-        if not cells or all(cell.replace("-", "").replace(":", "").strip() == "" for cell in cells):
+        if not cells or _is_markdown_separator(cells):
             continue
-        if name_column < len(cells) and cells[name_column].strip():
-            names.append(cells[name_column].strip())
-    return tuple(names)
+        rows.append(tuple(cells))
+    headers = (
+        tuple(_markdown_cells(lines[header_index])) if header_index is not None else None
+    )
+    return headers, tuple(rows)
 
 
 def _markdown_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_markdown_separator(cells: Sequence[str]) -> bool:
+    return bool(cells) and all(
+        cell.replace("-", "").replace(":", "").strip() == "" for cell in cells
+    )
+
+
+def payment_term_lookup_decision(markdown: str, expected: str) -> str:
+    headers, rows = _payment_term_table(markdown)
+    if headers is not None:
+        name_columns = [
+            index
+            for index, cell in enumerate(headers)
+            if normalize_display(cell) == "name"
+        ]
+        if name_columns:
+            name_column = name_columns[0]
+            names = tuple(
+                row[name_column].strip()
+                for row in rows
+                if name_column < len(row) and row[name_column].strip()
+            )
+            return payment_term_decision(names, expected)
+
+    expected_normalized = normalize_display(expected)
+    matching_rows = [
+        row
+        for row in rows
+        if any(normalize_display(cell) == expected_normalized for cell in row)
+    ]
+    if len(matching_rows) > 1:
+        raise MasterDataConflict(
+            f"Multiple visible payment terms named {expected}", stage="payment_method"
+        )
+    if matching_rows:
+        return "reuse"
+    if not rows:
+        return "create"
+    raise _automation_failure(
+        f"Visible payment-term rows did not contain exact {expected!r}"
+    )
 
 
 def _payment_terms_pane(app: FakturamaApp) -> Any:
@@ -601,7 +654,7 @@ def _payment_terms_pane(app: FakturamaApp) -> Any:
     return panes[0]
 
 
-def _visible_payment_term_names(app: FakturamaApp, pane: Any) -> tuple[str, ...]:
+def _visible_payment_term_decision(app: FakturamaApp, pane: Any, expected: str) -> str:
     settings = app.settings
     if settings is None or settings.mistral_api_key is None:
         raise _automation_failure("MISTRAL_API_KEY is required for payment-term OCR")
@@ -610,8 +663,8 @@ def _visible_payment_term_names(app: FakturamaApp, pane: Any) -> tuple[str, ...]
         raise _automation_failure("Terms-of-payment view has no unique Search field")
     from fakturama_automation.automation.visual_items import _ocr_markdown
 
-    return _payment_term_names_from_markdown(
-        _ocr_markdown(pane.capture_as_image(), settings)
+    return payment_term_lookup_decision(
+        _ocr_markdown(pane.capture_as_image(), settings), expected
     )
 
 
@@ -685,13 +738,13 @@ def ensure_payment_method(app: FakturamaApp | None, payment_method: str) -> str:
     if len(search) != 1:
         raise _automation_failure("Terms-of-payment view has no unique Search field")
     search[0].set_edit_text(expected)
-    decision = payment_term_decision(_visible_payment_term_names(app, pane), expected)
+    decision = _visible_payment_term_decision(app, pane, expected)
     if decision == "create":
         _create_payment_term(app, expected)
         pane = _payment_terms_pane(app)
         search = _labelled_edits(pane, "Search:")
         search[0].set_edit_text(expected)
-        if payment_term_decision(_visible_payment_term_names(app, pane), expected) != "reuse":
+        if _visible_payment_term_decision(app, pane, expected) != "reuse":
             raise _automation_failure(f"Payment term {expected!r} was not persisted")
     if app._order_view is not None:
         app._order_view.activate()
