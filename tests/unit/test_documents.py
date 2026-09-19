@@ -185,6 +185,44 @@ def test_save_action_is_resolved_from_application_window_scope() -> None:
     assert button.invoked
 
 
+def test_invoice_editor_is_activated_before_save() -> None:
+    class _Tab:
+        def __init__(self) -> None:
+            self.element_info = SimpleNamespace(name="*New Invoice")
+            self.selected = False
+            self.focused = False
+
+        def is_visible(self) -> bool:
+            return True
+
+        def is_enabled(self) -> bool:
+            return True
+
+        def select(self) -> None:
+            self.selected = True
+
+        def set_focus(self) -> None:
+            self.focused = True
+
+    class _Root:
+        def __init__(self, tab: _Tab) -> None:
+            self.tab = tab
+
+        def descendants(self, control_type: str):
+            return [self.tab] if control_type == "TabItem" else []
+
+    tab = _Tab()
+    documents._activate_invoice_editor(_Root(tab))
+
+    assert tab.selected is True
+    assert tab.focused is True
+
+
+def test_invoice_save_uses_shared_current_contents_action() -> None:
+    button = _FakeButton()
+    documents._save_current_contents(_FakeApplicationWindow(button))
+    assert button.invoked is True
+
 def test_normalize_payment_value() -> None:
     from decimal import Decimal
 

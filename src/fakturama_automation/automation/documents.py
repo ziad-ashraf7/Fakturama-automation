@@ -613,9 +613,31 @@ def _documents_rows(app: FakturamaApp) -> tuple[dict[str, str], ...]:
     )
 
 
+def _save_current_contents(root: Any) -> None:
+    _invoke_named(root, "Save the current contents")
+
+
+def _activate_invoice_editor(root: Any) -> Any:
+    tabs = [
+        tab
+        for tab in root.descendants(control_type="TabItem")
+        if _visible(tab) and "invoice" in _safe_name(tab).casefold()
+    ]
+    if len(tabs) != 1:
+        raise _automation_failure(
+            f"Expected one visible Invoice editor tab, found {len(tabs)}"
+        )
+    tab = tabs[0]
+    try:
+        tab.select()
+    except Exception:  # noqa: BLE001
+        tab.click_input()
+    tab.set_focus()
+    return tab
+
 def save_and_verify_order(app: FakturamaApp, order_view: OrderView, order: OrderInput) -> PersistedOrder:
     number = _read(order_view.root, "No.")
-    _invoke_named(app.window, "Save the current contents")
+    _save_current_contents(app.window)
     _filter_documents_by_reference(app, order.external_reference)
     wait_until(
         "saved Order editor",
@@ -671,6 +693,7 @@ def create_linked_invoice(app: FakturamaApp, persisted_order: PersistedOrder) ->
 
 def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> PersistedInvoice:
     root = app.window
+    _activate_invoice_editor(root)
     payment_combo = _select_invoice_payment_method(root, payment_code(order.payment.method))
     is_paid = order.payment.status == "PAID"
     paid_control = None
@@ -691,7 +714,8 @@ def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> Persist
             paid_control.click_input()
         _set_segmented_date(root, "at", order.payment.payment_date)
         _set_currency_value(root, "Value", order.totals.gross)
-    _invoke_named(root, "Save the current contents")
+    _activate_invoice_editor(root)
+    _save_current_contents(root)
     _assert_invoice_saved(root)
 
     def generated_number() -> str | None:
