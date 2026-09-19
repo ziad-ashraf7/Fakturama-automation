@@ -19,6 +19,8 @@ committed.
 
 The following recording demonstrates the complete image-to-cash automation workflow in Fakturama.
 
+[▶ Watch the full automation demo on Google Drive](https://drive.google.com/file/d/1lNjdrdKBEBa8ODCqkj0LSRumTGWoMg9i/view?usp=sharing)
+
 [▶ Watch the full automation demo](docs/recordings/Demo.mp4)
 
 ## Features
