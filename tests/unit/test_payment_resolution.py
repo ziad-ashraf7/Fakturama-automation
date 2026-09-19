@@ -31,13 +31,40 @@ def test_existing_credit_transfer_is_reused_without_creation(monkeypatch: pytest
     )
     monkeypatch.setattr(
         "fakturama_automation.workflow.complete_and_verify_invoice",
-        lambda _app, _order: events.append("select") or object(),
+        lambda _app, _order, _invoice_view: events.append("select") or object(),
     )
 
     complete_invoice_phase(object(), object(), _order())
 
     assert events == ["reuse", "invoice", "select"]
 
+
+def test_invoice_phase_passes_the_created_invoice_view_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_view = object()
+    received_views: list[object] = []
+
+    monkeypatch.setattr(
+        workflow,
+        "ensure_payment_method",
+        lambda _app, _method: "Credit transfer",
+    )
+    monkeypatch.setattr(
+        workflow,
+        "create_linked_invoice",
+        lambda _app, _order: created_view,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "complete_and_verify_invoice",
+        lambda _app, _order, invoice_view: received_views.append(invoice_view)
+        or object(),
+    )
+
+    complete_invoice_phase(object(), object(), _order())
+
+    assert received_views == [created_view]
 
 def test_missing_credit_transfer_is_created_and_persisted_before_invoice(
     monkeypatch: pytest.MonkeyPatch,
@@ -54,7 +81,7 @@ def test_missing_credit_transfer_is_created_and_persisted_before_invoice(
     )
     monkeypatch.setattr(
         "fakturama_automation.workflow.complete_and_verify_invoice",
-        lambda _app, _order: events.append("select") or object(),
+        lambda _app, _order, _invoice_view: events.append("select") or object(),
     )
 
     complete_invoice_phase(object(), object(), _order())
@@ -86,7 +113,7 @@ def test_invoice_phase_cannot_open_invoice_before_payment_resolution(
     )
     monkeypatch.setattr(
         "fakturama_automation.workflow.complete_and_verify_invoice",
-        lambda _app, _order: events.append("invoice-selected") or object(),
+        lambda _app, _order, _invoice_view: events.append("invoice-selected") or object(),
     )
 
     complete_invoice_phase(object(), object(), _order())

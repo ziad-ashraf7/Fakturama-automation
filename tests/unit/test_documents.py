@@ -185,7 +185,7 @@ def test_save_action_is_resolved_from_application_window_scope() -> None:
     assert button.invoked
 
 
-def test_invoice_editor_is_activated_before_save() -> None:
+def test_invoice_editor_reference_is_focused_before_save() -> None:
     class _Tab:
         def __init__(self) -> None:
             self.element_info = SimpleNamespace(name="*New Invoice")
@@ -212,7 +212,7 @@ def test_invoice_editor_is_activated_before_save() -> None:
             return [self.tab] if control_type == "TabItem" else []
 
     tab = _Tab()
-    documents._activate_invoice_editor(_Root(tab))
+    documents._focus_invoice_editor(tab)
 
     assert tab.selected is True
     assert tab.focused is True

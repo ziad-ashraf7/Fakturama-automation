@@ -617,23 +617,12 @@ def _save_current_contents(root: Any) -> None:
     _invoke_named(root, "Save the current contents")
 
 
-def _activate_invoice_editor(root: Any) -> Any:
-    tabs = [
-        tab
-        for tab in root.descendants(control_type="TabItem")
-        if _visible(tab) and "invoice" in _safe_name(tab).casefold()
-    ]
-    if len(tabs) != 1:
-        raise _automation_failure(
-            f"Expected one visible Invoice editor tab, found {len(tabs)}"
-        )
-    tab = tabs[0]
+def _focus_invoice_editor(tab: Any) -> None:
     try:
         tab.select()
     except Exception:  # noqa: BLE001
         tab.click_input()
     tab.set_focus()
-    return tab
 
 def save_and_verify_order(app: FakturamaApp, order_view: OrderView, order: OrderInput) -> PersistedOrder:
     number = _read(order_view.root, "No.")
@@ -688,12 +677,26 @@ def create_linked_invoice(app: FakturamaApp, persisted_order: PersistedOrder) ->
     if len(buttons) != 1:
         raise _automation_failure("Follow-up group has no unique Invoice action")
     buttons[0].invoke()
-    return app
 
+    def new_invoice_tab() -> Any | None:
+        candidates = [
+            tab
+            for tab in app.window.descendants(control_type="TabItem")
+            if _visible(tab)
+            and _safe_name(tab).lstrip().startswith("*")
+            and "invoice" in _safe_name(tab).casefold()
+        ]
+        if len(candidates) > 1:
+            raise _automation_failure(
+                f"Expected one newly-created Invoice editor tab, found {len(candidates)}"
+            )
+        return candidates[0] if candidates else None
 
-def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> PersistedInvoice:
+    return wait_until("new linked Invoice editor", new_invoice_tab, app.timeout)
+
+def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput, invoice_view: Any) -> PersistedInvoice:
     root = app.window
-    _activate_invoice_editor(root)
+    _focus_invoice_editor(invoice_view)
     payment_combo = _select_invoice_payment_method(root, payment_code(order.payment.method))
     is_paid = order.payment.status == "PAID"
     paid_control = None
@@ -714,7 +717,7 @@ def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> Persist
             paid_control.click_input()
         _set_segmented_date(root, "at", order.payment.payment_date)
         _set_currency_value(root, "Value", order.totals.gross)
-    _activate_invoice_editor(root)
+    _focus_invoice_editor(invoice_view)
     _save_current_contents(root)
     _assert_invoice_saved(root)
 

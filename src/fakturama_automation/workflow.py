@@ -45,10 +45,8 @@ def complete_invoice_phase(app, persisted_order, order) -> PersistedInvoice:
     """Resolve payment master data before opening the linked Invoice."""
 
     ensure_payment_method(app, order.payment.method)
-    create_linked_invoice(app, persisted_order)
-    return complete_and_verify_invoice(app, order)
-
-
+    invoice_view = create_linked_invoice(app, persisted_order)
+    return complete_and_verify_invoice(app, order, invoice_view)
 def run_order_to_cash(image_path: Path, settings: Settings) -> RunOutcome:
     run_id = _run_id(image_path)
     artifact_directory = settings.artifact_root / run_id
