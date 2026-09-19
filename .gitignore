@@ -27,3 +27,7 @@ artifacts/runs/
 Thumbs.db
 Desktop.ini
 artifacts/
+
+docs/superpowers/
+AGENT.md
+AGENTS.md
