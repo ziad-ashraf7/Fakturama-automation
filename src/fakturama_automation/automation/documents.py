@@ -21,7 +21,7 @@ from fakturama_automation.automation.app import (
     wait_until,
 )
 from fakturama_automation.domain.models import OrderInput
-from fakturama_automation.domain.rules import MONEY_QUANTUM, line_total
+from fakturama_automation.domain.rules import MONEY_QUANTUM, line_total, payment_code
 
 
 @dataclass(frozen=True)
@@ -219,6 +219,29 @@ def _select_vat_mode(root: Any) -> None:
         )
 
 
+def _select_invoice_payment_method(root: Any, expected: str) -> None:
+    value_control = _control(root, "Value")
+    value_rect = value_control.element_info.rectangle
+    candidates = [
+        combo
+        for combo in root.descendants(control_type="ComboBox")
+        if not _safe_name(combo)
+        and _visible(combo)
+        and combo.element_info.rectangle.top < value_rect.bottom
+        and combo.element_info.rectangle.bottom > value_rect.top
+    ]
+    if len(candidates) != 1:
+        raise _automation_failure(
+            f"Expected one Invoice payment-method selector, found {len(candidates)}"
+        )
+    candidates[0].select(expected)
+    actual = " ".join(_selected_control_value(candidates[0]).split())
+    if actual.casefold() != expected.casefold():
+        raise _automation_failure(
+            f"Invoice payment-method read-back mismatch: expected {expected!r}, got {actual!r}"
+        )
+
+
 def populate_order_header(order_view: OrderView, order: OrderInput) -> None:
     root = order_view.root
     _set_order_date(root, order.order_date)
@@ -335,6 +358,7 @@ def create_linked_invoice(app: FakturamaApp, persisted_order: PersistedOrder) ->
 
 def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> PersistedInvoice:
     root = app.window
+    _select_invoice_payment_method(root, payment_code(order.payment.method))
     paid = order.payment.status == "PAID"
     if paid:
         if order.payment.payment_date is None:

@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
-from fakturama_automation.automation.documents import _invoke_named, _select_net_price_mode
+from fakturama_automation.automation.documents import (
+    _invoke_named,
+    _select_invoice_payment_method,
+    _select_net_price_mode,
+)
 
 
 class _FakeCombo:
@@ -42,6 +46,49 @@ def test_select_net_price_mode_uses_header_combo_when_radio_missing() -> None:
     combo = _FakeCombo("Gross")
     _select_net_price_mode(_FakeRoot(combo))
     assert combo.value == "Net"
+
+
+class _FakeValueEdit:
+    def __init__(self) -> None:
+        self.element_info = SimpleNamespace(
+            name="Value",
+            control_type="Edit",
+            class_name="Edit",
+            rectangle=SimpleNamespace(top=100, bottom=120),
+        )
+
+    def is_visible(self) -> bool:
+        return True
+
+    def is_enabled(self) -> bool:
+        return True
+
+
+class _FakePaymentCombo(_FakeCombo):
+    def __init__(self) -> None:
+        super().__init__("Pay Cash")
+        self.element_info.rectangle = SimpleNamespace(top=100, bottom=120)
+
+
+class _FakeInvoiceRoot:
+    def __init__(self) -> None:
+        self.value_edit = _FakeValueEdit()
+        self.payment_combo = _FakePaymentCombo()
+
+    def descendants(self, control_type: str):
+        if control_type == "Edit":
+            return [self.value_edit]
+        if control_type == "ComboBox":
+            return [self.payment_combo]
+        return []
+
+
+def test_select_invoice_payment_method_uses_mapped_combo_and_readback() -> None:
+    root = _FakeInvoiceRoot()
+
+    _select_invoice_payment_method(root, "Credit transfer")
+
+    assert root.payment_combo.value == "Credit transfer"
 
 
 class _FakeButton:
