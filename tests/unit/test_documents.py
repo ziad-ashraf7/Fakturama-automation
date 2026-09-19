@@ -48,12 +48,12 @@ def test_select_net_price_mode_uses_header_combo_when_radio_missing() -> None:
     assert combo.value == "Net"
 
 
-class _FakeValueEdit:
+class _FakePaidCheckBox:
     def __init__(self) -> None:
         self.element_info = SimpleNamespace(
-            name="Value",
-            control_type="Edit",
-            class_name="Edit",
+            name="paid",
+            control_type="CheckBox",
+            class_name="CheckBox",
             rectangle=SimpleNamespace(top=100, bottom=120),
         )
 
@@ -64,22 +64,76 @@ class _FakeValueEdit:
         return True
 
 
+class _FakeOpenButton:
+    def __init__(self, combo: "_FakePaymentCombo") -> None:
+        self.combo = combo
+        self.element_info = SimpleNamespace(
+            name="Open",
+            control_type="Button",
+            class_name="Button",
+        )
+
+    def is_visible(self) -> bool:
+        return True
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def invoke(self) -> None:
+        self.combo.opened = True
+
+
+class _FakePaymentItem:
+    def __init__(self, combo: "_FakePaymentCombo") -> None:
+        self.combo = combo
+        self.element_info = SimpleNamespace(
+            name="Credit transfer",
+            control_type="ListItem",
+            class_name="ListItem",
+        )
+
+    def is_visible(self) -> bool:
+        return True
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def is_selected(self) -> bool:
+        return self.combo.value == "Credit transfer"
+
+    def click_input(self) -> None:
+        self.combo.value = "Credit transfer"
+
+
 class _FakePaymentCombo(_FakeCombo):
     def __init__(self) -> None:
         super().__init__("Pay Cash")
+        self.opened = False
         self.element_info.rectangle = SimpleNamespace(top=100, bottom=120)
+        self.open_button = _FakeOpenButton(self)
+        self.item = _FakePaymentItem(self)
+
+    def descendants(self, control_type: str):
+        if control_type == "Button":
+            return [self.open_button]
+        return []
+
+    def select(self, value: str) -> None:
+        raise AssertionError(f"direct combo select should not be used for {value!r}")
 
 
 class _FakeInvoiceRoot:
     def __init__(self) -> None:
-        self.value_edit = _FakeValueEdit()
+        self.paid = _FakePaidCheckBox()
         self.payment_combo = _FakePaymentCombo()
 
     def descendants(self, control_type: str):
-        if control_type == "Edit":
-            return [self.value_edit]
+        if control_type == "CheckBox":
+            return [self.paid]
         if control_type == "ComboBox":
             return [self.payment_combo]
+        if control_type == "ListItem" and self.payment_combo.opened:
+            return [self.payment_combo.item]
         return []
 
 

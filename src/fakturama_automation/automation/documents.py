@@ -220,22 +220,43 @@ def _select_vat_mode(root: Any) -> None:
 
 
 def _select_invoice_payment_method(root: Any, expected: str) -> None:
-    value_control = _control(root, "Value")
-    value_rect = value_control.element_info.rectangle
+    paid_control = _control(root, "paid", ("CheckBox",))
+    paid_rect = paid_control.element_info.rectangle
     candidates = [
         combo
         for combo in root.descendants(control_type="ComboBox")
         if not _safe_name(combo)
         and _visible(combo)
-        and combo.element_info.rectangle.top < value_rect.bottom
-        and combo.element_info.rectangle.bottom > value_rect.top
+        and combo.element_info.rectangle.top < paid_rect.bottom
+        and combo.element_info.rectangle.bottom > paid_rect.top
     ]
     if len(candidates) != 1:
         raise _automation_failure(
             f"Expected one Invoice payment-method selector, found {len(candidates)}"
         )
-    candidates[0].select(expected)
-    actual = " ".join(_selected_control_value(candidates[0]).split())
+    combo = candidates[0]
+    opens = [
+        button
+        for button in combo.descendants(control_type="Button")
+        if _safe_name(button) == "Open" and _visible(button)
+    ]
+    if len(opens) != 1:
+        raise _automation_failure("Invoice payment-method selector has no unique Open action")
+    opens[0].invoke()
+    item = wait_until(
+        f"Invoice payment method {expected!r}",
+        lambda: next(
+            (
+                candidate
+                for candidate in root.descendants(control_type="ListItem")
+                if _safe_name(candidate) == expected and _visible(candidate)
+            ),
+            None,
+        ),
+        5.0,
+    )
+    item.click_input()
+    actual = " ".join(_selected_control_value(combo).split())
     if actual.casefold() != expected.casefold():
         raise _automation_failure(
             f"Invoice payment-method read-back mismatch: expected {expected!r}, got {actual!r}"
