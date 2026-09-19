@@ -44,6 +44,21 @@ def test_unique_exact_result_uses_enter_once_after_auto_selection_timeout() -> N
     assert actions == ["enter"]
 
 
+def test_existing_order_row_wins_when_picker_close_observation_lags() -> None:
+    actions, press_enter, wait_for_close, verify_inserted = _selection_callbacks()
+
+    result = complete_product_picker_selection(
+        "MAT-DESK-02",
+        picker_closed=False,
+        candidates=(),
+        press_enter=press_enter,
+        wait_for_close=wait_for_close,
+        verify_inserted=verify_inserted,
+    )
+
+    assert result == "postcondition"
+    assert actions == []
+
 def test_ambiguous_results_fail_without_enter() -> None:
     actions, press_enter, wait_for_close, verify_inserted = _selection_callbacks()
 

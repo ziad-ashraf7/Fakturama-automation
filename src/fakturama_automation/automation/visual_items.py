@@ -11,8 +11,9 @@ from typing import Any
 
 from mistralai.client import Mistral
 from mistralai.client.models import ImageURLChunk
+from pywinauto import mouse
 
-from fakturama_automation.automation.app import _automation_failure
+from fakturama_automation.automation.app import _automation_failure, wait_until
 from fakturama_automation.config import Settings
 from fakturama_automation.domain.outcomes import MasterDataConflict
 
@@ -230,7 +231,9 @@ def cell_text_for_sku(markdown: str, sku: str, column: str) -> str:
 def read_item_cell_visually(
     grid: Any, sku: str, column: str, settings: Settings
 ) -> str:
-    image = grid.capture_as_image()
+    image = _capture_stable_grid_image(
+        grid, timeout=min(settings.uia_timeout_seconds, 0.75)
+    )
     return cell_text_for_sku(_ocr_markdown(image, settings), sku, column)
 
 
@@ -242,6 +245,23 @@ def item_cell_for_sku(
     return cell_for_sku(image, markdown, sku, "Item No.")
 
 
+
+def _capture_stable_grid_image(grid: Any, timeout: float = 0.75) -> Any:
+    """Dismiss hover UI and capture two identical frames before OCR."""
+    rectangle = grid.element_info.rectangle
+    mouse.move(coords=(rectangle.left + 1, rectangle.top + 1))
+    previous: bytes | None = None
+
+    def stable_image() -> Any | None:
+        nonlocal previous
+        image = grid.capture_as_image()
+        current = image.tobytes()
+        if current == previous:
+            return image
+        previous = current
+        return None
+
+    return wait_until("stable Items-grid screenshot", stable_image, timeout)
 
 def _ocr_markdown(image: Any, settings: Settings) -> str:
     api_key = settings.mistral_api_key
@@ -271,7 +291,9 @@ def _ocr_markdown(image: Any, settings: Settings) -> str:
 def select_item_row_visually(grid: Any, sku: str, settings: Settings) -> bool:
     """Select one exact visible SKU cell using OCR text and local image geometry."""
 
-    image = grid.capture_as_image()
+    image = _capture_stable_grid_image(
+        grid, timeout=min(settings.uia_timeout_seconds, 0.75)
+    )
     markdown = _ocr_markdown(image, settings)
     left, top, right, bottom = cell_for_sku(image, markdown, sku, "Item No.")
     grid.click_input(coords=((left + right) // 2, (top + bottom) // 2))
@@ -283,7 +305,9 @@ def activate_item_cell_visually(
 ) -> tuple[int, int, int, int]:
     """Click one exact SKU row's current cell using local OCR geometry."""
 
-    image = grid.capture_as_image()
+    image = _capture_stable_grid_image(
+        grid, timeout=min(settings.uia_timeout_seconds, 0.75)
+    )
     markdown = _ocr_markdown(image, settings)
     cell = cell_for_sku(image, markdown, sku, column)
     left, top, right, bottom = cell

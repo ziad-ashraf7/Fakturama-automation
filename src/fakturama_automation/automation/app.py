@@ -108,6 +108,11 @@ def complete_product_picker_selection(
             )
         return "auto"
     if not candidates:
+        try:
+            if verify_inserted():
+                return "postcondition"
+        except AutomationFailure:
+            pass
         raise _automation_failure(
             f"Product auto-selection timed out; no visible result was verified for {sku!r}"
         )
