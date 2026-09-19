@@ -8,11 +8,10 @@ The most important reliability choice is postcondition verification: saving an O
 
 ## If I had three more hours
 
-I would spend the time on the actual remaining risks observed in the implementation:
+I would spend the time on the risks that remained after the demonstrated run:
 
-1. Run the complete supplied sample image through Mistral and Fakturama on a clean data state, then capture annotated Order, Documents, linked-Invoice, and payment-state screenshots.
-2. Harden the maintenance-dialog selectors for the exact Fakturama installation by recording stable semantic names for Debtor, VAT, Product, and payment-method creation, while keeping the same semantic parent/child strategy.
-3. Add a second controlled UIA run covering a non-zero VAT and a missing Product/VAT creation branch, because the initial grid fixture exposed only Tax-free VAT.
-4. Improve persisted Documents-row parsing so the generated Order and Invoice number/state/total are read from explicit row fields rather than a whole-list text check.
+1. Finish and re-verify automated secondary debtor-address creation/update for the exact Fakturama installation. The native editor reuses one SWT content Pane across address tabs, and the English role value must be scoped and persisted without changing the Main address.
+2. Replace the Documents screenshot/manual evidence boundary with a small, installation-specific reader for the custom SWT Documents rows, so generated number, state, reference, and total are read back programmatically.
+3. Add one more clean run covering a genuinely missing VAT/Product branch and strengthen persisted Invoice payment read-back assertions, including the compact date display used by the payment control.
 
-I would not add another OCR provider, a database, a web service, computer vision, or a checkpoint framework; those would not reduce the current submission risk.
+I would not add another OCR provider, a database, a web service, computer vision framework, or checkpoint system; those would expand the take-home beyond its demonstrated risk.

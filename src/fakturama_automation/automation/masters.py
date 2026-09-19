@@ -205,6 +205,180 @@ def _order_visible_text(root: Any) -> str:
     return normalize_display(" ".join(values))
 
 
+_DELIVERY_ADDRESS_TYPE = "Delivery address"
+
+
+def debtor_addresses_complete(visible_text: str, debtor: Debtor) -> bool:
+    """Check billing and, when supplied, delivery address role values."""
+
+    normalized = normalize_display(visible_text)
+    billing_values = (
+        debtor.company,
+        debtor.billing_address.street,
+        debtor.billing_address.zip_code,
+        debtor.billing_address.city,
+        debtor.billing_address.country,
+    )
+    if any(normalize_display(value) not in normalized for value in billing_values if value):
+        return False
+    delivery = debtor.delivery_address
+    if delivery is None:
+        return True
+    delivery_values = (
+        delivery.additional_name,
+        delivery.street,
+        delivery.zip_code,
+        delivery.city,
+        delivery.country,
+        _DELIVERY_ADDRESS_TYPE,
+    )
+    return all(normalize_display(value) in normalized for value in delivery_values if value)
+
+
+def _address_tabs(editor: Any) -> list[Any]:
+    return [
+        tab
+        for tab in editor.descendants(control_type="TabItem")
+        if _visible(tab)
+        and (
+            _safe_name(tab) == "Main address"
+            or normalize_display(_safe_name(tab)).startswith("additional address #")
+        )
+    ]
+
+
+def _address_tab(editor: Any, name: str) -> Any | None:
+    return next((tab for tab in _address_tabs(editor) if _safe_name(tab) == name), None)
+
+
+def _address_content_pane(tab: Any) -> Any:
+    panes = [
+        child
+        for child in tab.parent().children(control_type="Pane")
+        if _visible(child)
+    ]
+    if len(panes) != 1:
+        raise _automation_failure(
+            f"Expected one content Pane for address tab {_safe_name(tab)!r}, found {len(panes)}"
+        )
+    return panes[0]
+
+
+def _write_labelled_edit(root: Any, label_name: str, value: str) -> None:
+    fields = _labelled_edits(root, label_name)
+    if len(fields) != 1:
+        raise _automation_failure(
+            f"Expected one editable field for {label_name!r}, found {len(fields)}"
+        )
+    fields[0].set_focus()
+    keyboard.send_keys("^a")
+    keyboard.send_keys(escape_keyboard_text(value), with_spaces=True)
+
+
+def _delivery_address_visible(address_pane: Any, debtor: Debtor) -> bool:
+    delivery = debtor.delivery_address
+    if delivery is None:
+        return True
+    visible = _order_visible_text(address_pane)
+    expected = (
+        delivery.additional_name,
+        delivery.street,
+        delivery.zip_code,
+        delivery.city,
+        delivery.country,
+        _DELIVERY_ADDRESS_TYPE,
+    )
+    return all(normalize_display(value) in visible for value in expected if value)
+
+
+def ensure_delivery_address(editor: Any, debtor: Debtor, timeout: float) -> None:
+    """Create or reuse the source delivery address in an open debtor editor."""
+
+    delivery = debtor.delivery_address
+    if delivery is None:
+        return
+    addresses_tab = next(
+        (
+            tab
+            for tab in editor.descendants(control_type="TabItem")
+            if _safe_name(tab) == "Addresses" and _visible(tab)
+        ),
+        None,
+    )
+    if addresses_tab is None:
+        raise _automation_failure("Debtor editor has no Addresses tab")
+    addresses_tab.click_input()
+
+    delivery_tab = None
+    for tab in _address_tabs(editor):
+        tab.click_input()
+        pane = _address_content_pane(tab)
+        if _delivery_address_visible(pane, debtor):
+            delivery_tab = tab
+            break
+        if delivery_tab is None and normalize_display(_safe_name(tab)).startswith(
+            "additional address #"
+        ):
+            delivery_tab = tab
+
+    if delivery_tab is None:
+        plus_buttons = [
+            button
+            for button in addresses_tab.parent().descendants(control_type="Button")
+            if _safe_name(button) == "+" and _visible(button)
+        ]
+        if len(plus_buttons) != 1:
+            raise _automation_failure(
+                f"Expected one additional-address action, found {len(plus_buttons)}"
+            )
+        plus_buttons[0].invoke()
+        delivery_tab = wait_until(
+            "additional debtor address",
+            lambda: next(
+                (
+                    tab
+                    for tab in _address_tabs(editor)
+                    if normalize_display(_safe_name(tab)).startswith("additional address #")
+                    and _visible(tab)
+                ),
+                None,
+            ),
+            timeout,
+        )
+
+    delivery_tab.click_input()
+    delivery_pane = _address_content_pane(delivery_tab)
+    if not _delivery_address_visible(delivery_pane, debtor):
+        if delivery.additional_name:
+            _write(delivery_pane, "additional name", delivery.additional_name)
+        _write(delivery_pane, "Street", delivery.street)
+        zip_city = _labelled_edits(delivery_pane, "ZIP - City")
+        if len(zip_city) != 2:
+            raise _automation_failure("Delivery address has no ZIP/City fields")
+        zip_city[0].set_focus()
+        keyboard.send_keys("^a")
+        keyboard.send_keys(escape_keyboard_text(delivery.zip_code), with_spaces=True)
+        zip_city[1].set_focus()
+        keyboard.send_keys("^a")
+        keyboard.send_keys(escape_keyboard_text(delivery.city), with_spaces=True)
+        _write(delivery_pane, "Country", delivery.country)
+        _write_labelled_edit(delivery_pane, "address type", _DELIVERY_ADDRESS_TYPE)
+        keyboard.send_keys("{TAB}")
+
+    main_tab = _address_tab(editor, "Main address")
+    if main_tab is None:
+        raise _automation_failure("Debtor editor has no Main address tab")
+    main_tab.click_input()
+    main_pane = _address_content_pane(main_tab)
+    main_text = _order_visible_text(main_pane)
+    delivery_tab.click_input()
+    delivery_pane = _address_content_pane(delivery_tab)
+    delivery_text = _order_visible_text(delivery_pane)
+    editor_text = _order_visible_text(editor)
+    if not debtor_addresses_complete(f"{editor_text} {main_text} {delivery_text}", debtor):
+        raise _automation_failure("Debtor billing/delivery address read-back failed")
+
+
 def _debtor_address_populated(order_view: OrderView, debtor: Debtor) -> bool:
     visible = _order_visible_text(order_view.root)
     expected = (
@@ -311,6 +485,7 @@ def _create_debtor(
         _write(editor, "E-Mail", address.email)
     if address.telephone:
         _write(editor, "Telephone", address.telephone)
+    ensure_delivery_address(editor, debtor, settings.uia_timeout_seconds)
 
     misc_tab = [
         tab

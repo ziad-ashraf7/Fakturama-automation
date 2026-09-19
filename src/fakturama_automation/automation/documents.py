@@ -18,6 +18,7 @@ from fakturama_automation.automation.app import (
     escape_keyboard_text,
     normalize_grid_readback,
     probe_items_grid,
+    wait_until,
 )
 from fakturama_automation.domain.models import OrderInput
 from fakturama_automation.domain.rules import MONEY_QUANTUM, line_total
@@ -90,22 +91,28 @@ def _write(root: Any, name: str, value: str) -> None:
     keyboard.send_keys(escape_keyboard_text(value), with_spaces=True)
 
 
-def _set_order_date(root: Any, order_date: date) -> None:
-    control = _control(root, "Date")
-    control.set_focus()
+def _set_segmented_date(root: Any, control_name: str, target_date: date) -> None:
+    control = _control(root, control_name)
+    rect = control.element_info.rectangle
+    control.click_input(coords=(max(1, rect.width() // 25), max(1, rect.height() // 2)))
     keyboard.send_keys("{HOME}")
-    keyboard.send_keys(str(order_date.month))
+    keyboard.send_keys(str(target_date.month))
     keyboard.send_keys("{ENTER}")
-    keyboard.send_keys(str(order_date.day))
+    keyboard.send_keys(str(target_date.day))
     keyboard.send_keys("{ENTER}")
-    keyboard.send_keys(str(order_date.year))
+    keyboard.send_keys(str(target_date.year))
     keyboard.send_keys("{ENTER}")
-    actual = _read(root, "Date").strip()
-    expected = f"{order_date.strftime('%b')} {order_date.day}, {order_date.year}"
-    if actual != expected:
+    actual = _read(root, control_name).strip()
+    expected = f"{target_date.strftime('%b')} {target_date.day}, {target_date.year}"
+    compact_expected = f"{target_date.strftime('%b')} {target_date.day}, {target_date.strftime('%y')}"
+    if actual not in {expected, compact_expected}:
         raise _automation_failure(
-            f"Order Date read-back mismatch: expected {expected!r}, got {actual!r}"
+            f"{control_name} read-back mismatch: expected {expected!r}, got {actual!r}"
         )
+
+
+def _set_order_date(root: Any, order_date: date) -> None:
+    _set_segmented_date(root, "Date", order_date)
 
 
 def _read(root: Any, name: str, control_types: tuple[str, ...] = ("Edit",)) -> str:
@@ -126,6 +133,21 @@ def _read(root: Any, name: str, control_types: tuple[str, ...] = ("Edit",)) -> s
 
 def _invoke_named(root: Any, name: str, control_type: str = "Button") -> None:
     _control(root, name, (control_type,)).invoke()
+
+
+def _set_currency_value(root: Any, name: str, value: Decimal) -> None:
+    control = _control(root, name)
+    control.click_input()
+    keyboard.send_keys("{HOME}")
+    keyboard.send_keys("+{END}")
+    keyboard.send_keys(format(value, "f"))
+    keyboard.send_keys("{TAB}")
+    actual = normalize_grid_readback(name, _read(root, name))
+    expected = value.quantize(MONEY_QUANTUM)
+    if actual != expected:
+        raise _automation_failure(
+            f"{name} read-back mismatch: expected {expected!s}, got {actual!s}"
+        )
 
 
 def order_level_values(order: OrderInput) -> tuple[Decimal, Decimal]:
@@ -234,19 +256,43 @@ def populate_order_items(app: FakturamaApp, order_view: OrderView, order: OrderI
             raise _automation_failure(f"Discount read-back mismatch for {item.sku}")
 
 
-def _documents_text(app: FakturamaApp) -> str:
-    return " ".join(
-        _safe_name(item)
-        for item in app.window.descendants(control_type="ListItem")
-        if _visible(item)
+def _documents_pane(app: FakturamaApp) -> Any:
+    tab = app.find_unique("Documents", "TabItem")
+    tab.click_input()
+    return next(
+        (
+            pane
+            for pane in tab.parent().children(control_type="Pane")
+            if _safe_name(pane) == "Documents" and _visible(pane)
+        ),
+        None,
     )
+
+
+def _filter_documents_by_reference(app: FakturamaApp, external_reference: str) -> None:
+    pane = _documents_pane(app)
+    if pane is None:
+        raise _automation_failure("Documents view has no semantic content Pane")
+    search = _control(pane, "Search:")
+    search.set_edit_text(external_reference)
 
 
 def save_and_verify_order(app: FakturamaApp, order_view: OrderView, order: OrderInput) -> PersistedOrder:
     number = _read(order_view.root, "No.")
-    _invoke_named(order_view.root, "Save the current contents")
-    if order.external_reference not in _documents_text(app):
-        raise _automation_failure("Saved Order was not found in Documents by Cust.Ref.")
+    _invoke_named(app.window, "Save the current contents")
+    _filter_documents_by_reference(app, order.external_reference)
+    wait_until(
+        "saved Order editor",
+        lambda: next(
+            (
+                tab
+                for tab in app.window.descendants(control_type="TabItem")
+                if _safe_name(tab) == number and _visible(tab)
+            ),
+            None,
+        ),
+        app.timeout,
+    )
     return PersistedOrder(
         number=number,
         external_reference=order.external_reference,
@@ -293,15 +339,20 @@ def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> Persist
     if paid:
         if order.payment.payment_date is None:
             raise _automation_failure("Paid source is missing Payment Date")
-        _write(root, "Payment Date", order.payment.payment_date.strftime("%d.%m.%Y"))
-        _write(root, "Value", str(order.totals.gross))
-        buttons = [
-            x
-            for x in root.descendants(control_type="CheckBox")
-            if _safe_name(x) in ("Paid", "paid") and _visible(x)
+        paid_controls = [
+            control
+            for control in root.descendants(control_type="CheckBox")
+            if _safe_name(control).casefold() == "paid" and _visible(control)
         ]
-        if len(buttons) == 1 and not buttons[0].is_checked():
-            buttons[0].check()
+        if len(paid_controls) != 1:
+            raise _automation_failure(
+                f"Expected one visible paid checkbox, found {len(paid_controls)}"
+            )
+        paid = paid_controls[0]
+        if paid.get_toggle_state() != 1:
+            paid.click_input()
+        _set_segmented_date(root, "at", order.payment.payment_date)
+        _set_currency_value(root, "Value", order.totals.gross)
     _invoke_named(root, "Save the current contents")
     return PersistedInvoice(
         number="new",

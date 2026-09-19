@@ -11,12 +11,6 @@ class _FakeDateEdit:
         self.value = "Sep 19, 2026"
         self.segment = "month"
         self.committed = False
-        self.element_info = SimpleNamespace(
-            name="Date",
-            control_type="Edit",
-            class_name="Edit",
-        )
-
     @property
     def iface_value(self):
         return SimpleNamespace(CurrentValue=self.value)
@@ -30,8 +24,20 @@ class _FakeDateEdit:
     def is_enabled(self) -> bool:
         return True
 
+    @property
+    def element_info(self):
+        return SimpleNamespace(
+            name="Date",
+            control_type="Edit",
+            class_name="Edit",
+            rectangle=SimpleNamespace(width=lambda: 100, height=lambda: 20),
+        )
+
     def set_focus(self) -> None:
         pass
+
+    def click_input(self, **kwargs: object) -> None:
+        del kwargs
 
 
 class _FakeDateRoot:

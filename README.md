@@ -59,7 +59,7 @@ The CLI prints `SUCCESS`, `MANUAL_REVIEW`, or `FAILED` and writes per-run eviden
 - `automation/documents.py`: Order header/line population, explicit Save, Documents verification, follow-up Invoice activation, and payment state.
 - `workflow.py` / `cli.py`: one direct orchestration path and terminal outcomes.
 
-UIA selectors use accessible names, control types, semantic parent/child relationships, and dynamically discovered section-local Images. No screen coordinates, fixed window sizes, global descendant indexes, direct database access, or computer vision are used. The opaque Items grid uses only the controlled keyboard path and observable read-back established during the feasibility probe.
+UIA selectors use accessible names, control types, semantic parent/child relationships, and dynamically discovered section-local Images. No absolute screen coordinates, fixed window sizes, global descendant indexes, or direct database access are used. The two custom-drawn SWT boundaries use narrowly scoped, dynamically captured visual row geometry only where UIA exposes no row: debtor selection and Items-row activation. No generic computer-vision framework is used.
 
 ## Verification and outcomes
 
@@ -90,6 +90,13 @@ The default unit suite does not require Fakturama or network access.
 
 ## Evidence and limitations
 
-Curated Task 4 UIA evidence is in [docs/screenshots/](docs/screenshots/). It demonstrates semantic section discovery, unique Product insertion, and Items-grid read-back. A supplied source image and a clean live Fakturama run are required to capture the final Order/Invoice screenshots; no fabricated end-to-end evidence is included.
+Curated evidence is in [docs/screenshots/](docs/screenshots/), including the saved Order, linked Invoice, Documents view, and Task 4 UIA/grid checkpoints.
 
-Known limitations are intentionally narrow: broader Fakturama maintenance-dialog variants and additional opaque-grid columns need more live coverage, and the final sample-image run depends on the supplied image and a configured Mistral key. See the written answer for concrete follow-up work.
+The demonstrated live run used the pre-seeded `CUST000005` debtor with both invoice and delivery addresses and produced:
+
+- Order: `PO000061`, reference `WEB-2026-0714-A17`
+- Linked Invoice: `INV000001`
+- Net / VAT / Gross: `570.00 / 108.30 / 678.30`
+- Invoice payment: PAID, `2026-07-18`, `678.30`
+
+Known limitation: automated creation/update of a secondary debtor delivery address is not production-complete. The demonstrated E2E path intentionally uses a pre-existing debtor whose billing and delivery roles have been verified. The Documents table is also custom SWT content, so the final row evidence is curated by screenshot while the workflow uses semantic Documents navigation and exact-reference filtering. See [docs/written-answers.md](docs/written-answers.md) for concrete next work.
