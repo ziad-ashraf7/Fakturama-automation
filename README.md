@@ -152,7 +152,6 @@ successful demonstrated run includes:
 - [saved Order PO000066](docs/screenshots/saved-order-PO000066.png)
 - [saved linked Invoice INV000005](docs/screenshots/saved-invoice-INV000005.png)
 - [Documents verification](docs/screenshots/documents-verified-PO000066-INV000005.png)
-- [Items-grid Task 4 evidence](docs/screenshots/task4-grid.png)
 
 That demonstration used pre-seeded CUST000005 and verified totals of
 570.00 net, 108.30 VAT, and 678.30 gross. These are evidence from that run,
