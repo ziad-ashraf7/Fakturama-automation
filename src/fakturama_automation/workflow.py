@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fakturama_automation.automation.app import FakturamaApp
 from fakturama_automation.automation.documents import (
+    PersistedInvoice,
     complete_and_verify_invoice,
     create_linked_invoice,
     populate_order_header,
@@ -40,6 +41,14 @@ def _append_run_log(artifact_directory: Path, message: str) -> None:
         log.write(message.rstrip() + "\n")
 
 
+def complete_invoice_phase(app, persisted_order, order) -> PersistedInvoice:
+    """Resolve payment master data before opening the linked Invoice."""
+
+    ensure_payment_method(app, order.payment.method)
+    create_linked_invoice(app, persisted_order)
+    return complete_and_verify_invoice(app, order)
+
+
 def run_order_to_cash(image_path: Path, settings: Settings) -> RunOutcome:
     run_id = _run_id(image_path)
     artifact_directory = settings.artifact_root / run_id
@@ -58,16 +67,14 @@ def run_order_to_cash(image_path: Path, settings: Settings) -> RunOutcome:
         order_view = app.open_unsaved_order()
         populate_order_header(order_view, order)
         stage = "master_data"
-        ensure_payment_method(app, order.payment.method)
         resolve_debtor(app, order_view, order.debtor, order.payment, settings)
         stage = "order_items"
         populate_order_items(app, order_view, order)
         stage = "order_persistence"
         persisted_order = save_and_verify_order(app, order_view, order)
         stage = "invoice"
-        create_linked_invoice(app, persisted_order)
+        persisted_invoice = complete_invoice_phase(app, persisted_order, order)
         stage = "invoice_persistence"
-        persisted_invoice = complete_and_verify_invoice(app, order)
         outcome = RunOutcome(
             status=OutcomeStatus.SUCCESS,
             stage="complete",

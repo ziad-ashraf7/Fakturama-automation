@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -549,11 +549,153 @@ def resolve_debtor(
     _create_debtor(app, order_view, debtor, payment, settings)
 
 
-def ensure_payment_method(app: FakturamaApp | None, payment_method: str) -> str:
-    """Return the assignment-required Fakturama payment code."""
+def payment_term_decision(names: Sequence[str], expected: str) -> str:
+    matches = [name for name in names if normalize_display(name) == normalize_display(expected)]
+    if len(matches) > 1:
+        raise MasterDataConflict(
+            f"Multiple payment terms named {expected}", stage="payment_method"
+        )
+    return "reuse" if matches else "create"
 
-    del app
-    return payment_code(payment_method)
+
+def _payment_term_names_from_markdown(markdown: str) -> tuple[str, ...]:
+    lines = [line.strip() for line in markdown.splitlines() if line.strip().startswith("|")]
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if any(normalize_display(cell) == "name" for cell in _markdown_cells(line))
+        ),
+        None,
+    )
+    if header_index is None:
+        raise _automation_failure("Payment terms OCR has no Name column")
+    headers = _markdown_cells(lines[header_index])
+    name_column = next(
+        index for index, cell in enumerate(headers) if normalize_display(cell) == "name"
+    )
+    names: list[str] = []
+    for line in lines[header_index + 1 :]:
+        cells = _markdown_cells(line)
+        if not cells or all(cell.replace("-", "").replace(":", "").strip() == "" for cell in cells):
+            continue
+        if name_column < len(cells) and cells[name_column].strip():
+            names.append(cells[name_column].strip())
+    return tuple(names)
+
+
+def _markdown_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _payment_terms_pane(app: FakturamaApp) -> Any:
+    tab = app.find_unique("terms of payment", "TabItem")
+    tab.click_input()
+    panes = [
+        pane
+        for pane in tab.parent().children(control_type="Pane")
+        if _safe_name(pane) == "terms of payment" and _visible(pane)
+    ]
+    if len(panes) != 1:
+        raise _automation_failure("Terms-of-payment view has no unique content Pane")
+    return panes[0]
+
+
+def _visible_payment_term_names(app: FakturamaApp, pane: Any) -> tuple[str, ...]:
+    settings = app.settings
+    if settings is None or settings.mistral_api_key is None:
+        raise _automation_failure("MISTRAL_API_KEY is required for payment-term OCR")
+    search = _labelled_edits(pane, "Search:")
+    if len(search) != 1:
+        raise _automation_failure("Terms-of-payment view has no unique Search field")
+    from fakturama_automation.automation.visual_items import _ocr_markdown
+
+    return _payment_term_names_from_markdown(
+        _ocr_markdown(pane.capture_as_image(), settings)
+    )
+
+
+def _select_payment_code(editor: Any, expected: str) -> None:
+    combo = _named(editor, "!editorPaymentPaymentcode!", ("ComboBox",))
+    opens = [
+        button
+        for button in combo.descendants(control_type="Button")
+        if _safe_name(button) == "Open" and _visible(button)
+    ]
+    if len(opens) != 1:
+        raise _automation_failure("Payment-term code selector has no unique Open action")
+    opens[0].invoke()
+    item = wait_until(
+        f"payment-term code {expected!r}",
+        lambda: next(
+            (
+                candidate
+                for candidate in editor.parent().descendants(control_type="ListItem")
+                if normalize_display(_safe_name(candidate)) == normalize_display(expected)
+                and _visible(candidate)
+            ),
+            None,
+        ),
+        5.0,
+    )
+    item.click_input()
+
+
+def _create_payment_term(app: FakturamaApp, expected: str) -> None:
+    _open_data_item(app, "terms of payment")
+    _tab_button(app, "terms of payment", "Create a new term of payment").invoke()
+    editor = wait_until(
+        "new payment-term editor",
+        lambda: _editor_by_base_tab(app, "New Term of Payment"),
+        app.timeout,
+    )
+    _write(editor, "Name", expected)
+    _write(editor, "Description", expected)
+    _select_payment_code(editor, expected)
+    for field in ("Cash discount", "Discount Days", "Net Days"):
+        _write(editor, field, "0")
+    save = _first_button(app.window, ("Save the current contents",))
+    if save is None:
+        raise _automation_failure("Payment-term editor has no save action")
+    save.invoke()
+    wait_until("payment-term save completion", lambda: True if not save.is_enabled() else None, app.timeout)
+    wait_until(
+        "saved payment-term editor",
+        lambda: next(
+            (
+                tab
+                for tab in app.window.descendants(control_type="TabItem")
+                if _safe_name(tab).lstrip("*") == expected and _visible(tab)
+            ),
+            None,
+        ),
+        app.timeout,
+    )
+
+
+def ensure_payment_method(app: FakturamaApp | None, payment_method: str) -> str:
+    """Ensure the mapped payment term exists before an Invoice is opened."""
+
+    expected = payment_code(payment_method)
+    if app is None:
+        return expected
+    _open_data_item(app, "terms of payment")
+    pane = _payment_terms_pane(app)
+    search = _labelled_edits(pane, "Search:")
+    if len(search) != 1:
+        raise _automation_failure("Terms-of-payment view has no unique Search field")
+    search[0].set_edit_text(expected)
+    decision = payment_term_decision(_visible_payment_term_names(app, pane), expected)
+    if decision == "create":
+        _create_payment_term(app, expected)
+        pane = _payment_terms_pane(app)
+        search = _labelled_edits(pane, "Search:")
+        search[0].set_edit_text(expected)
+        if payment_term_decision(_visible_payment_term_names(app, pane), expected) != "reuse":
+            raise _automation_failure(f"Payment term {expected!r} was not persisted")
+    if app._order_view is not None:
+        app._order_view.activate()
+    return expected
 
 
 
