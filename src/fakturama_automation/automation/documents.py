@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from pywinauto import keyboard
+from pywinauto import Desktop, keyboard
 
 from fakturama_automation.automation.app import (
     FakturamaApp,
@@ -402,15 +403,179 @@ def populate_order_items(app: FakturamaApp, order_view: OrderView, order: OrderI
 
 
 def _documents_pane(app: FakturamaApp) -> Any:
-    tab = app.find_unique("Documents", "TabItem")
+    tabs = [
+        tab
+        for tab in app.window.descendants(control_type="TabItem")
+        if _safe_name(tab) == "Documents" and _visible(tab)
+    ]
+    if len(tabs) > 1:
+        raise _automation_failure("Multiple visible Documents tabs are ambiguous")
+    if not tabs:
+        data_items = [
+            item
+            for item in app.window.descendants(control_type="MenuItem")
+            if _safe_name(item) == "Data" and _visible(item)
+        ]
+        if len(data_items) != 1:
+            raise _automation_failure("Data menu is not uniquely available")
+        data_items[0].click_input()
+        documents_item = wait_until(
+            "Data menu item Documents",
+            lambda: next(
+                (
+                    item
+                    for item in app.window.descendants(control_type="MenuItem")
+                    if _safe_name(item) == "Documents" and _visible(item)
+                ),
+                None,
+            ),
+            app.timeout,
+        )
+        documents_item.click_input()
+        tabs = [
+            wait_until(
+                "Documents TabItem",
+                lambda: next(
+                    (
+                        tab
+                        for tab in app.window.descendants(control_type="TabItem")
+                        if _safe_name(tab) == "Documents" and _visible(tab)
+                    ),
+                    None,
+                ),
+                app.timeout,
+            )
+        ]
+    tab = tabs[0]
     tab.click_input()
-    return next(
-        (
-            pane
-            for pane in tab.parent().children(control_type="Pane")
-            if _safe_name(pane) == "Documents" and _visible(pane)
-        ),
-        None,
+    panes = [
+        pane
+        for pane in tab.parent().children(control_type="Pane")
+        if _safe_name(pane) == "Documents" and _visible(pane)
+    ]
+    if len(panes) != 1:
+        raise _automation_failure("Documents view has no unique content Pane")
+    return panes[0]
+
+
+def _documents_result_pane(pane: Any) -> Any:
+    search = _control(pane, "Search:")
+    search_rect = search.element_info.rectangle
+    candidates = [
+        candidate
+        for candidate in pane.descendants(control_type="Pane")
+        if _safe_name(candidate) == ""
+        and candidate.element_info.class_name == "SWT_Window0"
+        and _visible(candidate)
+        and candidate.element_info.rectangle.top >= search_rect.bottom
+        and not candidate.descendants(control_type="Edit")
+    ]
+    if not candidates:
+        raise _automation_failure("Documents view has no opaque result Pane")
+    return max(
+        candidates,
+        key=lambda candidate: candidate.element_info.rectangle.width()
+        * candidate.element_info.rectangle.height(),
+    )
+
+
+def _native_documents_category_roots(app: FakturamaApp, pane: Any) -> tuple[Any, ...]:
+    desktop = Desktop(backend="win32")
+    main_window = desktop.window(handle=app.window.element_info.handle)
+    pane_rect = pane.element_info.rectangle
+    trees = [
+        tree
+        for tree in main_window.descendants()
+        if tree.class_name() == "SysTreeView32"
+        and tree.rectangle().left >= pane_rect.left
+        and tree.rectangle().top >= pane_rect.top
+        and tree.rectangle().right <= pane_rect.right
+        and tree.rectangle().bottom <= pane_rect.bottom
+    ]
+    if len(trees) != 1:
+        raise _automation_failure(
+            f"Expected one Documents SysTreeView32, found {len(trees)}"
+        )
+    roots = []
+    for root in trees[0].roots():
+        rect = root.client_rect()
+        if rect.right > rect.left and rect.bottom > rect.top:
+            roots.append(root)
+    if not roots:
+        raise _automation_failure("Documents category tree has no visible roots")
+    return tuple(roots)
+
+
+def _set_documents_search(pane: Any, value: str, timeout: float) -> None:
+    search = _control(pane, "Search:")
+    search.set_edit_text("")
+    search.set_focus()
+    keyboard.send_keys(escape_keyboard_text(value), with_spaces=True)
+    wait_until(
+        "Documents exact search value",
+        lambda: search
+        if _normalize_document_value(_read(pane, "Search:"))
+        == _normalize_document_value(value)
+        else None,
+        timeout,
+    )
+
+
+def _find_invoice_documents_row(
+    category_roots: Sequence[Any],
+    rows_for_category: Callable[[Any], Sequence[dict[str, str]]],
+    *,
+    invoice_number: str,
+) -> dict[str, str]:
+    target = _normalize_document_value(invoice_number)
+    matches: list[dict[str, str]] = []
+    for root in category_roots:
+        root.select()
+        exact_rows = [
+            row
+            for row in rows_for_category(root)
+            if _normalize_document_value(row.get("Document", "")) == target
+        ]
+        if len(exact_rows) > 1:
+            raise _automation_failure(
+                f"Invoice {invoice_number!r} appears multiple times in one document category"
+            )
+        matches.extend(exact_rows)
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise _automation_failure(
+            f"Invoice {invoice_number!r} was not found in any document category"
+        )
+    raise _automation_failure(
+        f"Invoice {invoice_number!r} appears in multiple document categories"
+    )
+
+
+def _find_persisted_invoice_row(app: FakturamaApp, invoice_number: str) -> dict[str, str]:
+    pane = _documents_pane(app)
+    settings = app.settings
+    if settings is None or settings.mistral_api_key is None:
+        raise _automation_failure("MISTRAL_API_KEY is required for Documents verification")
+    roots = _native_documents_category_roots(app, pane)
+
+    def rows_for_category(_root: Any) -> tuple[dict[str, str], ...]:
+        _set_documents_search(pane, invoice_number, app.timeout)
+        result_pane = wait_until(
+            "Documents result Pane",
+            lambda: _documents_result_pane(pane),
+            app.timeout,
+        )
+        from fakturama_automation.automation.visual_items import _ocr_markdown
+
+        return _document_rows_from_markdown(
+            _ocr_markdown(result_pane.capture_as_image(), settings)
+        )
+
+    return _find_invoice_documents_row(
+        roots,
+        rows_for_category,
+        invoice_number=invoice_number,
     )
 
 
@@ -431,8 +596,9 @@ def _documents_rows(app: FakturamaApp) -> tuple[dict[str, str], ...]:
         raise _automation_failure("MISTRAL_API_KEY is required for Documents verification")
     from fakturama_automation.automation.visual_items import _ocr_markdown
 
+    result_pane = _documents_result_pane(pane)
     return _document_rows_from_markdown(
-        _ocr_markdown(pane.capture_as_image(), settings)
+        _ocr_markdown(result_pane.capture_as_image(), settings)
     )
 
 
@@ -545,21 +711,7 @@ def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> Persist
                 f"Invoice payment value mismatch after Save: expected {expected_value!s}, "
                 f"got {actual_value!s}"
             )
-    _filter_documents_by_reference(app, order.external_reference)
-    rows = wait_until(
-        "persisted Invoice Documents row",
-        lambda: _documents_rows(app) or None,
-        app.timeout,
-    )
-    row = next(
-        (
-            candidate
-            for candidate in rows
-            if _normalize_document_value(candidate.get("Document", ""))
-            == _normalize_document_value(number)
-        ),
-        None,
-    )
+    row = _find_persisted_invoice_row(app, number)
     return verify_persisted_invoice(
         number=number,
         external_reference=order.external_reference,

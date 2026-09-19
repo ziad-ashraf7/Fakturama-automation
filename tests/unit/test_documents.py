@@ -5,6 +5,7 @@ import pytest
 
 from fakturama_automation.automation import documents
 from fakturama_automation.automation.documents import (
+    _find_invoice_documents_row,
     _invoke_named,
     _select_invoice_payment_method,
     _select_net_price_mode,
@@ -258,4 +259,42 @@ def test_persisted_invoice_rejects_wrong_reference_or_total() -> None:
             total=Decimal("678.30"),
             state="paid",
             document_row=_invoice_row(total="$1.00"),
+        )
+
+
+class _FakeCategoryRoot:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.selected = False
+
+    def select(self) -> None:
+        self.selected = True
+
+
+def test_invoice_documents_search_checks_each_native_category() -> None:
+    orders = _FakeCategoryRoot("orders")
+    invoices = _FakeCategoryRoot("invoices")
+
+    def rows_for(root: _FakeCategoryRoot) -> tuple[dict[str, str], ...]:
+        if root is orders:
+            return (_invoice_row(number="PO000001"),)
+        return (_invoice_row(),)
+
+    row = _find_invoice_documents_row(
+        (orders, invoices), rows_for, invoice_number="INV000001"
+    )
+
+    assert row["Document"] == "INV000001"
+    assert orders.selected is True
+    assert invoices.selected is True
+
+
+def test_invoice_documents_search_fails_when_no_category_contains_invoice() -> None:
+    categories = (_FakeCategoryRoot("orders"), _FakeCategoryRoot("invoices"))
+
+    with pytest.raises(AutomationFailure, match="not found in any document category"):
+        _find_invoice_documents_row(
+            categories,
+            lambda _root: (_invoice_row(number="PO000001"),),
+            invoice_number="INV000001",
         )
