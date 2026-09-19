@@ -94,9 +94,9 @@ Curated evidence is in [docs/screenshots/](docs/screenshots/), including the sav
 
 The demonstrated live run used the pre-seeded `CUST000005` debtor with both invoice and delivery addresses and produced:
 
-- Order: `PO000061`, reference `WEB-2026-0714-A17`
-- Linked Invoice: `INV000001`
+- Order: `PO000066`, reference `WEB-2026-0714-A17`
+- Linked Invoice: `INV000005`
 - Net / VAT / Gross: `570.00 / 108.30 / 678.30`
-- Invoice payment: PAID, `2026-07-18`, `678.30`
+- Invoice payment: Credit transfer, PAID, `2026-07-18`, `678.30`
 
 Known limitation: automated creation/update of a secondary debtor delivery address is not production-complete. The demonstrated E2E path intentionally uses a pre-existing debtor whose billing and delivery roles have been verified. The Documents table is also custom SWT content, so the final row evidence is curated by screenshot while the workflow uses semantic Documents navigation and exact-reference filtering. See [docs/written-answers.md](docs/written-answers.md) for concrete next work.
