@@ -21,6 +21,7 @@ from fakturama_automation.automation.app import (
     wait_until,
 )
 from fakturama_automation.domain.models import OrderInput
+from fakturama_automation.domain.outcomes import AutomationFailure
 from fakturama_automation.domain.rules import MONEY_QUANTUM, line_total, payment_code
 
 
@@ -39,6 +40,105 @@ class PersistedInvoice:
     number: str
     total: Decimal
     state: str
+
+
+def _normalize_document_value(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def verify_persisted_invoice(
+    *,
+    number: str,
+    external_reference: str,
+    total: Decimal,
+    state: str,
+    document_row: dict[str, str] | None,
+) -> PersistedInvoice:
+    normalized_number = _normalize_document_value(number)
+    if not normalized_number or normalized_number == "new":
+        raise _automation_failure(
+            f"Generated Invoice number was not assigned after Save: {number!r}"
+        )
+    if document_row is None:
+        raise _automation_failure(
+            f"Persisted Invoice {number!r} has no matching Documents row"
+        )
+    actual_number = _normalize_document_value(document_row.get("Document", ""))
+    if actual_number != normalized_number:
+        raise _automation_failure(
+            f"Documents Invoice number mismatch: expected {number!r}, "
+            f"got {document_row.get('Document', '')!r}"
+        )
+    actual_reference = _normalize_document_value(document_row.get("Cust.Ref.", ""))
+    if actual_reference != _normalize_document_value(external_reference):
+        raise _automation_failure(
+            f"Documents Invoice Cust.Ref. mismatch: expected {external_reference!r}, "
+            f"got {document_row.get('Cust.Ref.', '')!r}"
+        )
+    try:
+        actual_total = normalize_grid_readback("Total", document_row.get("Total", ""))
+    except ValueError as error:
+        raise _automation_failure("Documents Invoice total was unreadable") from error
+    expected_total = total.quantize(MONEY_QUANTUM)
+    if actual_total != expected_total:
+        raise _automation_failure(
+            f"Documents Invoice Total mismatch: expected {expected_total!s}, "
+            f"got {actual_total!s}"
+        )
+    actual_state = _normalize_document_value(document_row.get("State", ""))
+    if actual_state != _normalize_document_value(state):
+        raise _automation_failure(
+            f"Documents Invoice state mismatch: expected {state!r}, "
+            f"got {document_row.get('State', '')!r}"
+        )
+    return PersistedInvoice(number=number, total=expected_total, state=state)
+
+
+def _document_rows_from_markdown(markdown: str) -> tuple[dict[str, str], ...]:
+    lines = [line.strip() for line in markdown.splitlines() if line.strip().startswith("|")]
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if any(_normalize_document_value(cell) == "document" for cell in _markdown_cells(line))
+        ),
+        None,
+    )
+    if header_index is None:
+        raise _automation_failure("Documents OCR has no Document column")
+    headers = _markdown_cells(lines[header_index])
+    separator_index = next(
+        (
+            index
+            for index, line in enumerate(lines[header_index + 1 :], header_index + 1)
+            if _is_markdown_separator(_markdown_cells(line))
+        ),
+        None,
+    )
+    data_start = separator_index + 1 if separator_index is not None else header_index + 1
+    rows: list[dict[str, str]] = []
+    for line in lines[data_start:]:
+        cells = _markdown_cells(line)
+        if not cells or _is_markdown_separator(cells):
+            continue
+        rows.append(
+            {
+                headers[index]: cells[index].strip()
+                for index in range(min(len(headers), len(cells)))
+                if headers[index].strip()
+            }
+        )
+    return tuple(rows)
+
+
+def _markdown_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_markdown_separator(cells: list[str]) -> bool:
+    return bool(cells) and all(
+        cell.replace("-", "").replace(":", "").strip() == "" for cell in cells
+    )
 
 
 def _control(root: Any, name: str, control_types: tuple[str, ...] = ("Edit",)):
@@ -219,7 +319,7 @@ def _select_vat_mode(root: Any) -> None:
         )
 
 
-def _select_invoice_payment_method(root: Any, expected: str) -> None:
+def _select_invoice_payment_method(root: Any, expected: str) -> Any:
     paid_control = _control(root, "paid", ("CheckBox",))
     paid_rect = paid_control.element_info.rectangle
     candidates = [
@@ -261,6 +361,7 @@ def _select_invoice_payment_method(root: Any, expected: str) -> None:
         raise _automation_failure(
             f"Invoice payment-method read-back mismatch: expected {expected!r}, got {actual!r}"
         )
+    return combo
 
 
 def populate_order_header(order_view: OrderView, order: OrderInput) -> None:
@@ -321,6 +422,20 @@ def _filter_documents_by_reference(app: FakturamaApp, external_reference: str) -
     search.set_edit_text(external_reference)
 
 
+def _documents_rows(app: FakturamaApp) -> tuple[dict[str, str], ...]:
+    pane = _documents_pane(app)
+    if pane is None:
+        raise _automation_failure("Documents view has no semantic content Pane")
+    settings = app.settings
+    if settings is None or settings.mistral_api_key is None:
+        raise _automation_failure("MISTRAL_API_KEY is required for Documents verification")
+    from fakturama_automation.automation.visual_items import _ocr_markdown
+
+    return _document_rows_from_markdown(
+        _ocr_markdown(pane.capture_as_image(), settings)
+    )
+
+
 def save_and_verify_order(app: FakturamaApp, order_view: OrderView, order: OrderInput) -> PersistedOrder:
     number = _read(order_view.root, "No.")
     _invoke_named(app.window, "Save the current contents")
@@ -379,9 +494,10 @@ def create_linked_invoice(app: FakturamaApp, persisted_order: PersistedOrder) ->
 
 def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> PersistedInvoice:
     root = app.window
-    _select_invoice_payment_method(root, payment_code(order.payment.method))
-    paid = order.payment.status == "PAID"
-    if paid:
+    payment_combo = _select_invoice_payment_method(root, payment_code(order.payment.method))
+    is_paid = order.payment.status == "PAID"
+    paid_control = None
+    if is_paid:
         if order.payment.payment_date is None:
             raise _automation_failure("Paid source is missing Payment Date")
         paid_controls = [
@@ -393,14 +509,61 @@ def complete_and_verify_invoice(app: FakturamaApp, order: OrderInput) -> Persist
             raise _automation_failure(
                 f"Expected one visible paid checkbox, found {len(paid_controls)}"
             )
-        paid = paid_controls[0]
-        if paid.get_toggle_state() != 1:
-            paid.click_input()
+        paid_control = paid_controls[0]
+        if paid_control.get_toggle_state() != 1:
+            paid_control.click_input()
         _set_segmented_date(root, "at", order.payment.payment_date)
         _set_currency_value(root, "Value", order.totals.gross)
     _invoke_named(root, "Save the current contents")
-    return PersistedInvoice(
-        number="new",
+
+    def generated_number() -> str | None:
+        try:
+            number = _read(root, "No.").strip()
+        except AutomationFailure:
+            return None
+        return number if _normalize_document_value(number) not in {"", "new"} else None
+
+    number = wait_until("generated Invoice number after Save", generated_number, app.timeout)
+    expected_payment = payment_code(order.payment.method)
+    if _selected_control_value(payment_combo).strip().casefold() != expected_payment.casefold():
+        raise _automation_failure("Invoice payment method was not retained after Save")
+    if is_paid:
+        if paid_control is None or paid_control.get_toggle_state() != 1:
+            raise _automation_failure("Invoice paid state was not retained after Save")
+        expected_date = order.payment.payment_date.strftime("%b %d, %Y").replace(" 0", " ")
+        compact_date = order.payment.payment_date.strftime("%b %d, %y").replace(" 0", " ")
+        actual_date = _read(root, "at").strip()
+        if actual_date not in {expected_date, compact_date}:
+            raise _automation_failure(
+                f"Invoice payment date mismatch after Save: expected {expected_date!r}, "
+                f"got {actual_date!r}"
+            )
+        actual_value = normalize_grid_readback("Value", _read(root, "Value"))
+        expected_value = order.totals.gross.quantize(MONEY_QUANTUM)
+        if actual_value != expected_value:
+            raise _automation_failure(
+                f"Invoice payment value mismatch after Save: expected {expected_value!s}, "
+                f"got {actual_value!s}"
+            )
+    _filter_documents_by_reference(app, order.external_reference)
+    rows = wait_until(
+        "persisted Invoice Documents row",
+        lambda: _documents_rows(app) or None,
+        app.timeout,
+    )
+    row = next(
+        (
+            candidate
+            for candidate in rows
+            if _normalize_document_value(candidate.get("Document", ""))
+            == _normalize_document_value(number)
+        ),
+        None,
+    )
+    return verify_persisted_invoice(
+        number=number,
+        external_reference=order.external_reference,
         total=order.totals.gross,
-        state="paid" if paid else "open",
+        state="paid" if is_paid else "open",
+        document_row=row,
     )

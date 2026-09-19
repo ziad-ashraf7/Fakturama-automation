@@ -1,10 +1,15 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
+from fakturama_automation.automation import documents
 from fakturama_automation.automation.documents import (
     _invoke_named,
     _select_invoice_payment_method,
     _select_net_price_mode,
 )
+from fakturama_automation.domain.outcomes import AutomationFailure
 
 
 class _FakeCombo:
@@ -184,3 +189,73 @@ def test_normalize_payment_value() -> None:
     from fakturama_automation.automation.app import normalize_grid_readback
 
     assert normalize_grid_readback("Value", "$678.30") == Decimal("678.30")
+
+
+def _invoice_row(
+    number: str = "INV000001",
+    reference: str = "WEB-2026-0714-A17",
+    total: str = "$678.30",
+    state: str = "paid",
+) -> dict[str, str]:
+    return {
+        "Document": number,
+        "Cust.Ref.": reference,
+        "Total": total,
+        "State": state,
+    }
+
+
+def test_persisted_invoice_requires_generated_number_and_matching_documents_row() -> None:
+    result = documents.verify_persisted_invoice(
+        number="INV000001",
+        external_reference="WEB-2026-0714-A17",
+        total=Decimal("678.30"),
+        state="paid",
+        document_row=_invoice_row(),
+    )
+
+    assert result.number == "INV000001"
+    assert result.total == Decimal("678.30")
+    assert result.state == "paid"
+
+
+def test_persisted_invoice_rejects_new_placeholder_after_save() -> None:
+    with pytest.raises(AutomationFailure, match="Generated Invoice number"):
+        documents.verify_persisted_invoice(
+            number="new",
+            external_reference="WEB-2026-0714-A17",
+            total=Decimal("678.30"),
+            state="paid",
+            document_row=_invoice_row(number="new"),
+        )
+
+
+def test_persisted_invoice_rejects_missing_documents_row() -> None:
+    with pytest.raises(AutomationFailure, match="Documents row"):
+        documents.verify_persisted_invoice(
+            number="INV000001",
+            external_reference="WEB-2026-0714-A17",
+            total=Decimal("678.30"),
+            state="paid",
+            document_row=None,
+        )
+
+
+def test_persisted_invoice_rejects_wrong_reference_or_total() -> None:
+    with pytest.raises(AutomationFailure, match="Cust.Ref."):
+        documents.verify_persisted_invoice(
+            number="INV000001",
+            external_reference="WEB-2026-0714-A17",
+            total=Decimal("678.30"),
+            state="paid",
+            document_row=_invoice_row(reference="WRONG"),
+        )
+
+    with pytest.raises(AutomationFailure, match="Total"):
+        documents.verify_persisted_invoice(
+            number="INV000001",
+            external_reference="WEB-2026-0714-A17",
+            total=Decimal("678.30"),
+            state="paid",
+            document_row=_invoice_row(total="$1.00"),
+        )
